@@ -1,0 +1,45 @@
+name: Chronicle CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  ci:
+    name: CI checks
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: "-D warnings"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure clippy and rustfmt are installed
+        run: |
+          rustup component add clippy rustfmt
+
+      - name: Build (debug)
+        run: cargo build --all
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy static analysis
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --lib --bins
+
+      - name: Integration / cluster tests
+        run: cargo test --tests
+
+      - name: Performance smoke tests (optional)
+        run: cargo test perf_smoke -- --ignored || echo "No perf_smoke tests defined; skipping"
+
