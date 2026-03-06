@@ -38,7 +38,6 @@ impl Index {
     pub fn load(path: &Path) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
-            .write(true)
             .append(true)
             .open(path)?;
         let meta = file.metadata()?;
@@ -69,19 +68,13 @@ impl Index {
         let mut reader = BufReader::new(log_file);
         let mut entries = Vec::new();
         let mut file_pos: u64 = 0;
-
-        loop {
-            match Record::decode(&mut reader)? {
-                Some(record) => {
-                    let rel = (record.offset - base_offset) as u32;
-                    entries.push(IndexEntry {
-                        relative_offset: rel,
-                        position: file_pos as u32,
-                    });
-                    file_pos += record.encoded_size() as u64;
-                }
-                None => break,
-            }
+        while let Some(record) = Record::decode(&mut reader)? {
+            let rel = (record.offset - base_offset) as u32;
+            entries.push(IndexEntry {
+                relative_offset: rel,
+                position: file_pos as u32,
+            });
+            file_pos += record.encoded_size() as u64;
         }
 
         {
@@ -155,8 +148,8 @@ impl Index {
         self.entries.truncate(count);
         let file = OpenOptions::new()
             .create(true)
-            .write(true)
             .truncate(true)
+            .write(true)
             .read(true)
             .open(&self.path)?;
         let mut writer = BufWriter::new(&file);

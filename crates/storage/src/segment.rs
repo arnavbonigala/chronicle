@@ -26,6 +26,7 @@ impl Segment {
         let (log_path, index_path) = segment_paths(dir, base_offset);
         let log_file = OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .read(true)
             .open(&log_path)?;
