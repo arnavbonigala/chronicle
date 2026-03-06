@@ -36,10 +36,7 @@ impl Index {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().read(true).append(true).open(path)?;
         let meta = file.metadata()?;
         let len = meta.len() as usize;
         let entry_count = len / ENTRY_SIZE;
