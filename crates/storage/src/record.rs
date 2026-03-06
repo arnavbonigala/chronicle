@@ -25,8 +25,7 @@ impl Record {
     }
 
     pub fn encode(&self, buf: &mut Vec<u8>) {
-        let payload_len =
-            (4 + 8 + 8 + 4 + self.key.len() + 4 + self.value.len()) as u32; // crc through value
+        let payload_len = (4 + 8 + 8 + 4 + self.key.len() + 4 + self.value.len()) as u32; // crc through value
 
         let crc = {
             let mut hasher = crc32fast::Hasher::new();

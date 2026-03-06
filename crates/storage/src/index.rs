@@ -27,10 +27,7 @@ impl Index {
             .write(true)
             .truncate(true)
             .open(path)?;
-        let file = OpenOptions::new()
-            .append(true)
-            .read(true)
-            .open(path)?;
+        let file = OpenOptions::new().append(true).read(true).open(path)?;
         Ok(Self {
             path: path.to_path_buf(),
             file,
@@ -118,10 +115,8 @@ impl Index {
             relative_offset,
             position,
         };
-        self.file
-            .write_all(&relative_offset.to_be_bytes())?;
-        self.file
-            .write_all(&position.to_be_bytes())?;
+        self.file.write_all(&relative_offset.to_be_bytes())?;
+        self.file.write_all(&position.to_be_bytes())?;
         self.entries.push(entry);
         Ok(())
     }

@@ -43,7 +43,11 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
         request: Request<proto::FetchRequest>,
     ) -> Result<Response<proto::FetchResponse>, Status> {
         let req = request.into_inner();
-        let max_records = if req.max_records == 0 { 100 } else { req.max_records };
+        let max_records = if req.max_records == 0 {
+            100
+        } else {
+            req.max_records
+        };
         let log = self.log.lock().unwrap();
 
         match log.read(req.offset, max_records) {

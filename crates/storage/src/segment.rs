@@ -42,10 +42,7 @@ impl Segment {
 
     pub fn open(dir: &Path, base_offset: u64) -> Result<Self> {
         let (log_path, index_path) = segment_paths(dir, base_offset);
-        let log_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&log_path)?;
+        let log_file = OpenOptions::new().read(true).write(true).open(&log_path)?;
         let size = log_file.metadata()?.len();
 
         let index = if index_path.exists() {
@@ -101,16 +98,18 @@ impl Segment {
             });
         }
         let relative = (offset - self.base_offset) as u32;
-        let position = self.index.lookup(relative).ok_or(StorageError::OffsetOutOfRange {
-            requested: offset,
-            earliest: self.base_offset,
-            latest: self.next_offset,
-        })?;
+        let position = self
+            .index
+            .lookup(relative)
+            .ok_or(StorageError::OffsetOutOfRange {
+                requested: offset,
+                earliest: self.base_offset,
+                latest: self.next_offset,
+            })?;
 
         let mut reader = BufReader::new(&self.log_file);
         reader.seek(SeekFrom::Start(position as u64))?;
-        Record::decode(&mut reader)?
-            .ok_or(StorageError::CorruptRecord { offset })
+        Record::decode(&mut reader)?.ok_or(StorageError::CorruptRecord { offset })
     }
 
     pub fn read_from(&self, start_offset: u64, max_records: u32) -> Result<Vec<Record>> {
