@@ -1,8 +1,9 @@
 mod service;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use chronicle_storage::{Log, StorageConfig};
+use chronicle_storage::{StorageConfig, TopicStore};
 use clap::Parser;
 use tonic::transport::Server;
 
@@ -39,11 +40,11 @@ async fn main() -> anyhow::Result<()> {
         segment_max_bytes: args.segment_max_bytes,
     };
 
-    let log = Log::open(config)?;
+    let store = Arc::new(TopicStore::open(config)?);
     tracing::info!(addr = %args.listen_addr, "starting chronicle server");
 
     let addr = args.listen_addr.parse()?;
-    let svc = service::ChronicleService::new(log);
+    let svc = service::ChronicleService::new(store);
 
     Server::builder()
         .add_service(proto::chronicle_server::ChronicleServer::new(svc))

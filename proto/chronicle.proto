@@ -4,21 +4,29 @@ package chronicle;
 service Chronicle {
   rpc Produce(ProduceRequest) returns (ProduceResponse);
   rpc Fetch(FetchRequest) returns (FetchResponse);
+  rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse);
+  rpc DeleteTopic(DeleteTopicRequest) returns (DeleteTopicResponse);
+  rpc GetMetadata(GetMetadataRequest) returns (GetMetadataResponse);
 }
 
 message ProduceRequest {
   bytes key = 1;
   bytes value = 2;
+  string topic = 3;
+  optional uint32 partition = 4;
 }
 
 message ProduceResponse {
   uint64 offset = 1;
   Error error = 2;
+  uint32 partition = 3;
 }
 
 message FetchRequest {
   uint64 offset = 1;
   uint32 max_records = 2;
+  string topic = 3;
+  uint32 partition = 4;
 }
 
 message FetchResponse {
@@ -34,6 +42,39 @@ message Record {
   bytes value = 4;
 }
 
+message CreateTopicRequest {
+  string name = 1;
+  uint32 partition_count = 2;
+  uint32 replication_factor = 3;
+}
+
+message CreateTopicResponse {
+  Error error = 1;
+}
+
+message DeleteTopicRequest {
+  string name = 1;
+}
+
+message DeleteTopicResponse {
+  Error error = 1;
+}
+
+message GetMetadataRequest {
+  repeated string topics = 1;
+}
+
+message GetMetadataResponse {
+  repeated TopicInfo topics = 1;
+  Error error = 2;
+}
+
+message TopicInfo {
+  string name = 1;
+  uint32 partition_count = 2;
+  uint32 replication_factor = 3;
+}
+
 message Error {
   ErrorCode code = 1;
   string message = 2;
@@ -43,4 +84,8 @@ enum ErrorCode {
   NONE = 0;
   OFFSET_OUT_OF_RANGE = 1;
   INTERNAL_ERROR = 2;
+  UNKNOWN_TOPIC = 3;
+  UNKNOWN_PARTITION = 4;
+  TOPIC_ALREADY_EXISTS = 5;
+  INVALID_REQUEST = 6;
 }
