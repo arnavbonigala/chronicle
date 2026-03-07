@@ -17,6 +17,19 @@ pub enum StorageError {
 
     #[error("invalid segment filename: {0}")]
     InvalidSegmentFile(PathBuf),
+
+    #[error("unknown topic: {name}")]
+    UnknownTopic { name: String },
+
+    #[error("unknown partition {partition} for topic {topic} (count: {count})")]
+    UnknownPartition {
+        topic: String,
+        partition: u32,
+        count: u32,
+    },
+
+    #[error("topic already exists: {name}")]
+    TopicAlreadyExists { name: String },
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;
