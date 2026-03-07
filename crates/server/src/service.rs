@@ -292,3 +292,33 @@ fn storage_err_to_proto(e: &StorageError) -> proto::Error {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_routing_is_deterministic() {
+        let counter = AtomicU32::new(0);
+        let a = route_partition(b"order-123", 4, &counter);
+        let b = route_partition(b"order-123", 4, &counter);
+        assert_eq!(a, b);
+        assert!(a < 4);
+    }
+
+    #[test]
+    fn empty_key_round_robins() {
+        let counter = AtomicU32::new(0);
+        let partitions: Vec<u32> = (0..4).map(|_| route_partition(b"", 4, &counter)).collect();
+        assert_eq!(partitions, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn key_routing_respects_partition_count() {
+        let counter = AtomicU32::new(0);
+        for key in [b"a".as_slice(), b"b", b"c", b"xyz", b"hello"] {
+            let p = route_partition(key, 3, &counter);
+            assert!(p < 3, "partition {p} out of range for count 3");
+        }
+    }
+}

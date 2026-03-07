@@ -152,3 +152,155 @@ fn read_meta(path: &Path, name: String) -> Result<TopicMeta> {
         replication_factor,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn test_config(dir: &Path) -> StorageConfig {
+        StorageConfig {
+            data_dir: dir.to_path_buf(),
+            segment_max_bytes: 10 * 1024 * 1024,
+        }
+    }
+
+    #[test]
+    fn open_empty_dir() {
+        let dir = tempdir().unwrap();
+        let store = TopicStore::open(test_config(dir.path())).unwrap();
+        assert!(store.list_topics().is_empty());
+    }
+
+    #[test]
+    fn create_and_get_topic() {
+        let dir = tempdir().unwrap();
+        let store = TopicStore::open(test_config(dir.path())).unwrap();
+        store.create_topic("orders", 4, 1).unwrap();
+
+        let topic = store.topic("orders").unwrap();
+        assert_eq!(topic.partition_count(), 4);
+        assert_eq!(topic.meta.replication_factor, 1);
+    }
+
+    #[test]
+    fn create_duplicate_topic() {
+        let dir = tempdir().unwrap();
+        let store = TopicStore::open(test_config(dir.path())).unwrap();
+        store.create_topic("orders", 4, 1).unwrap();
+
+        let err = store.create_topic("orders", 2, 1).unwrap_err();
+        assert!(matches!(err, StorageError::TopicAlreadyExists { .. }));
+    }
+
+    #[test]
+    fn delete_topic() {
+        let dir = tempdir().unwrap();
+        let store = TopicStore::open(test_config(dir.path())).unwrap();
+        store.create_topic("orders", 2, 1).unwrap();
+        store.delete_topic("orders").unwrap();
+
+        assert!(store.topic("orders").is_none());
+        assert!(store.list_topics().is_empty());
+        assert!(!dir.path().join("topics/orders").exists());
+    }
+
+    #[test]
+    fn delete_unknown_topic() {
+        let dir = tempdir().unwrap();
+        let store = TopicStore::open(test_config(dir.path())).unwrap();
+
+        let err = store.delete_topic("nope").unwrap_err();
+        assert!(matches!(err, StorageError::UnknownTopic { .. }));
+    }
+
+    #[test]
+    fn list_topics() {
+        let dir = tempdir().unwrap();
+        let store = TopicStore::open(test_config(dir.path())).unwrap();
+        store.create_topic("a", 1, 1).unwrap();
+        store.create_topic("b", 3, 1).unwrap();
+
+        let mut names: Vec<String> = store.list_topics().iter().map(|m| m.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn partition_write_and_read() {
+        let dir = tempdir().unwrap();
+        let store = TopicStore::open(test_config(dir.path())).unwrap();
+        store.create_topic("t", 2, 1).unwrap();
+
+        let topic = store.topic("t").unwrap();
+
+        {
+            let mut log = topic.partition(0).unwrap().write().unwrap();
+            log.append(b"k0", b"v0").unwrap();
+        }
+        {
+            let mut log = topic.partition(1).unwrap().write().unwrap();
+            log.append(b"k1", b"v1").unwrap();
+        }
+
+        let log0 = topic.partition(0).unwrap().read().unwrap();
+        let recs = log0.read(0, 10).unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].key.as_ref(), b"k0");
+
+        let log1 = topic.partition(1).unwrap().read().unwrap();
+        let recs = log1.read(0, 10).unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].key.as_ref(), b"k1");
+    }
+
+    #[test]
+    fn partition_out_of_range() {
+        let dir = tempdir().unwrap();
+        let store = TopicStore::open(test_config(dir.path())).unwrap();
+        store.create_topic("t", 2, 1).unwrap();
+
+        let topic = store.topic("t").unwrap();
+        assert!(topic.partition(2).is_none());
+    }
+
+    #[test]
+    fn reopen_persists_topics_and_data() {
+        let dir = tempdir().unwrap();
+        {
+            let store = TopicStore::open(test_config(dir.path())).unwrap();
+            store.create_topic("orders", 2, 3).unwrap();
+            let topic = store.topic("orders").unwrap();
+            let mut log = topic.partition(0).unwrap().write().unwrap();
+            log.append(b"k", b"v").unwrap();
+        }
+
+        let store = TopicStore::open(test_config(dir.path())).unwrap();
+        let topics = store.list_topics();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].name, "orders");
+        assert_eq!(topics[0].partition_count, 2);
+        assert_eq!(topics[0].replication_factor, 3);
+
+        let topic = store.topic("orders").unwrap();
+        let log = topic.partition(0).unwrap().read().unwrap();
+        let recs = log.read(0, 10).unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].value.as_ref(), b"v");
+    }
+
+    #[test]
+    fn meta_bin_roundtrip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta.bin");
+        let meta = TopicMeta {
+            name: "test".into(),
+            partition_count: 8,
+            replication_factor: 3,
+        };
+        write_meta(&path, &meta).unwrap();
+        let loaded = read_meta(&path, "test".into()).unwrap();
+        assert_eq!(loaded.partition_count, 8);
+        assert_eq!(loaded.replication_factor, 3);
+    }
+}
