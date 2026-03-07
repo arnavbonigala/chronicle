@@ -4,8 +4,10 @@ pub mod index;
 pub mod log;
 pub mod record;
 pub mod segment;
+pub mod topic;
 
 pub use config::StorageConfig;
 pub use error::{Result, StorageError};
 pub use log::Log;
 pub use record::Record;
+pub use topic::{TopicMeta, TopicState, TopicStore};
