@@ -19,6 +19,10 @@ enum Command {
     Produce {
         #[arg(long, default_value = "http://127.0.0.1:9092")]
         server: String,
+        #[arg(long)]
+        topic: String,
+        #[arg(long)]
+        partition: Option<u32>,
         #[arg(long, default_value = "")]
         key: String,
         #[arg(long)]
@@ -27,12 +31,36 @@ enum Command {
     Consume {
         #[arg(long, default_value = "http://127.0.0.1:9092")]
         server: String,
+        #[arg(long)]
+        topic: String,
+        #[arg(long)]
+        partition: u32,
         #[arg(long, default_value_t = 0)]
         offset: u64,
         #[arg(long, default_value_t = 100)]
         max_records: u32,
         #[arg(long, default_value_t = false)]
         follow: bool,
+    },
+    CreateTopic {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        partitions: u32,
+        #[arg(long, default_value_t = 1)]
+        replication_factor: u32,
+    },
+    DeleteTopic {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        name: String,
+    },
+    ListTopics {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
     },
 }
 
@@ -41,26 +69,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Produce { server, key, value } => {
+        Command::Produce {
+            server,
+            topic,
+            partition,
+            key,
+            value,
+        } => {
             let mut client = connect(&server).await?;
             let resp = client
                 .produce(proto::ProduceRequest {
+                    topic,
+                    partition,
                     key: key.into_bytes(),
                     value: value.into_bytes(),
                 })
                 .await?
                 .into_inner();
 
-            if let Some(err) = resp.error {
-                if err.code != proto::ErrorCode::None as i32 {
-                    eprintln!("error: {}", err.message);
-                    std::process::exit(1);
-                }
-            }
-            println!("offset={}", resp.offset);
+            check_error(&resp.error);
+            println!("partition={} offset={}", resp.partition, resp.offset);
         }
         Command::Consume {
             server,
+            topic,
+            partition,
             offset,
             max_records,
             follow,
@@ -71,18 +104,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 let resp = client
                     .fetch(proto::FetchRequest {
+                        topic: topic.clone(),
+                        partition,
                         offset: current_offset,
                         max_records,
                     })
                     .await?
                     .into_inner();
 
-                if let Some(err) = &resp.error {
-                    if err.code != proto::ErrorCode::None as i32 {
-                        eprintln!("error: {}", err.message);
-                        std::process::exit(1);
-                    }
-                }
+                check_error(&resp.error);
 
                 for record in &resp.records {
                     let key_str = String::from_utf8_lossy(&record.key);
@@ -103,9 +133,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        Command::CreateTopic {
+            server,
+            name,
+            partitions,
+            replication_factor,
+        } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .create_topic(proto::CreateTopicRequest {
+                    name: name.clone(),
+                    partition_count: partitions,
+                    replication_factor,
+                })
+                .await?
+                .into_inner();
+
+            check_error(&resp.error);
+            println!("created topic {} with {} partition(s)", name, partitions);
+        }
+        Command::DeleteTopic { server, name } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .delete_topic(proto::DeleteTopicRequest { name: name.clone() })
+                .await?
+                .into_inner();
+
+            check_error(&resp.error);
+            println!("deleted topic {}", name);
+        }
+        Command::ListTopics { server } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .get_metadata(proto::GetMetadataRequest { topics: vec![] })
+                .await?
+                .into_inner();
+
+            check_error(&resp.error);
+
+            if resp.topics.is_empty() {
+                println!("no topics");
+            } else {
+                println!("{:<20} {:>10} {:>12}", "TOPIC", "PARTITIONS", "REPLICATION");
+                for t in &resp.topics {
+                    println!(
+                        "{:<20} {:>10} {:>12}",
+                        t.name, t.partition_count, t.replication_factor
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+fn check_error(error: &Option<proto::Error>) {
+    if let Some(err) = error {
+        if err.code != proto::ErrorCode::None as i32 {
+            eprintln!("error: {}", err.message);
+            std::process::exit(1);
+        }
+    }
 }
 
 async fn connect(addr: &str) -> Result<ChronicleClient<Channel>, tonic::transport::Error> {
