@@ -201,6 +201,7 @@ dependencies = [
  "anyhow",
  "chronicle-storage",
  "clap",
+ "crc32fast",
  "prost",
  "tokio",
  "tonic",
