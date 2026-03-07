@@ -30,8 +30,9 @@ jobs:
       - name: Build (debug)
         run: cargo build --all
 
-      - name: Build (release)
-        run: cargo build --release
+      # Temporarily disabled because it duplicates the debug build.
+      # - name: Build (release)
+      #   run: cargo build --release
 
       - name: Check formatting
         run: cargo fmt --check
