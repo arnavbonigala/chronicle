@@ -83,6 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     partition,
                     key: key.into_bytes(),
                     value: value.into_bytes(),
+                    acks: proto::Acks::Leader.into(),
                 })
                 .await?
                 .into_inner();

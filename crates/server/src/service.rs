@@ -36,6 +36,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                     code: proto::ErrorCode::InvalidRequest.into(),
                     message: "topic is required".into(),
                 }),
+                leader_broker_id: None,
             }));
         }
 
@@ -49,6 +50,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                         code: proto::ErrorCode::UnknownTopic.into(),
                         message: format!("unknown topic: {}", req.topic),
                     }),
+                    leader_broker_id: None,
                 }));
             }
         };
@@ -68,6 +70,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                                 topic.partition_count()
                             ),
                         }),
+                        leader_broker_id: None,
                     }));
                 }
                 p
@@ -82,11 +85,13 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 offset,
                 partition: pid,
                 error: None,
+                leader_broker_id: None,
             })),
             Err(e) => Ok(Response::new(proto::ProduceResponse {
                 offset: 0,
                 partition: pid,
                 error: Some(storage_err_to_proto(&e)),
+                leader_broker_id: None,
             })),
         }
     }
@@ -105,6 +110,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                     code: proto::ErrorCode::InvalidRequest.into(),
                     message: "topic is required".into(),
                 }),
+                leader_broker_id: None,
             }));
         }
 
@@ -118,6 +124,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                         code: proto::ErrorCode::UnknownTopic.into(),
                         message: format!("unknown topic: {}", req.topic),
                     }),
+                    leader_broker_id: None,
                 }));
             }
         };
@@ -135,6 +142,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                         topic.partition_count()
                     ),
                 }),
+                leader_broker_id: None,
             }));
         }
 
@@ -162,12 +170,14 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                     records: proto_records,
                     high_watermark,
                     error: None,
+                    leader_broker_id: None,
                 }))
             }
             Err(e) => Ok(Response::new(proto::FetchResponse {
                 records: vec![],
                 high_watermark: log.latest_offset(),
                 error: Some(storage_err_to_proto(&e)),
+                leader_broker_id: None,
             })),
         }
     }
@@ -240,6 +250,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                     name: m.name,
                     partition_count: m.partition_count,
                     replication_factor: m.replication_factor,
+                    partitions: vec![],
                 })
                 .collect()
         } else {
@@ -249,6 +260,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                     name: m.name,
                     partition_count: m.partition_count,
                     replication_factor: m.replication_factor,
+                    partitions: vec![],
                 })
                 .collect()
         };
@@ -256,6 +268,33 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
         Ok(Response::new(proto::GetMetadataResponse {
             topics,
             error: None,
+        }))
+    }
+
+    async fn replicate_fetch(
+        &self,
+        _request: Request<proto::ReplicateFetchRequest>,
+    ) -> Result<Response<proto::ReplicateFetchResponse>, Status> {
+        Ok(Response::new(proto::ReplicateFetchResponse {
+            records: vec![],
+            leader_leo: 0,
+            high_watermark: 0,
+            error: Some(proto::Error {
+                code: proto::ErrorCode::InternalError.into(),
+                message: "not yet implemented".into(),
+            }),
+        }))
+    }
+
+    async fn create_replica(
+        &self,
+        _request: Request<proto::CreateReplicaRequest>,
+    ) -> Result<Response<proto::CreateReplicaResponse>, Status> {
+        Ok(Response::new(proto::CreateReplicaResponse {
+            error: Some(proto::Error {
+                code: proto::ErrorCode::InternalError.into(),
+                message: "not yet implemented".into(),
+            }),
         }))
     }
 }

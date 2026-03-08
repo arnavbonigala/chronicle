@@ -7,6 +7,14 @@ service Chronicle {
   rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse);
   rpc DeleteTopic(DeleteTopicRequest) returns (DeleteTopicResponse);
   rpc GetMetadata(GetMetadataRequest) returns (GetMetadataResponse);
+  rpc ReplicateFetch(ReplicateFetchRequest) returns (ReplicateFetchResponse);
+  rpc CreateReplica(CreateReplicaRequest) returns (CreateReplicaResponse);
+}
+
+enum Acks {
+  ACKS_LEADER = 0;
+  ACKS_NONE = 1;
+  ACKS_ALL = 2;
 }
 
 message ProduceRequest {
@@ -14,12 +22,14 @@ message ProduceRequest {
   bytes value = 2;
   string topic = 3;
   optional uint32 partition = 4;
+  Acks acks = 5;
 }
 
 message ProduceResponse {
   uint64 offset = 1;
   Error error = 2;
   uint32 partition = 3;
+  optional uint32 leader_broker_id = 4;
 }
 
 message FetchRequest {
@@ -33,6 +43,7 @@ message FetchResponse {
   repeated Record records = 1;
   uint64 high_watermark = 2;
   Error error = 3;
+  optional uint32 leader_broker_id = 4;
 }
 
 message Record {
@@ -73,6 +84,47 @@ message TopicInfo {
   string name = 1;
   uint32 partition_count = 2;
   uint32 replication_factor = 3;
+  repeated PartitionInfo partitions = 4;
+}
+
+message PartitionInfo {
+  uint32 partition_id = 1;
+  uint32 leader_broker_id = 2;
+  repeated uint32 replica_broker_ids = 3;
+  repeated uint32 isr_broker_ids = 4;
+  uint64 high_watermark = 5;
+  uint64 log_end_offset = 6;
+}
+
+message ReplicateFetchRequest {
+  uint32 broker_id = 1;
+  string topic = 2;
+  uint32 partition = 3;
+  uint64 fetch_offset = 4;
+}
+
+message ReplicateFetchResponse {
+  repeated Record records = 1;
+  uint64 leader_leo = 2;
+  uint64 high_watermark = 3;
+  Error error = 4;
+}
+
+message CreateReplicaRequest {
+  string topic = 1;
+  uint32 partition_count = 2;
+  uint32 replication_factor = 3;
+  repeated uint32 local_partitions = 4;
+  repeated ProtoPartitionAssignment assignments = 5;
+}
+
+message ProtoPartitionAssignment {
+  uint32 partition_id = 1;
+  repeated uint32 replica_ids = 2;
+}
+
+message CreateReplicaResponse {
+  Error error = 1;
 }
 
 message Error {
@@ -88,4 +140,5 @@ enum ErrorCode {
   UNKNOWN_PARTITION = 4;
   TOPIC_ALREADY_EXISTS = 5;
   INVALID_REQUEST = 6;
+  NOT_LEADER_FOR_PARTITION = 7;
 }
