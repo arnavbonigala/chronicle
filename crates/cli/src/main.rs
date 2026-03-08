@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use tonic::transport::Channel;
 
 pub mod proto {
@@ -14,6 +14,13 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Clone, ValueEnum)]
+enum AcksArg {
+    None,
+    Leader,
+    All,
+}
+
 #[derive(Subcommand)]
 enum Command {
     Produce {
@@ -27,6 +34,8 @@ enum Command {
         key: String,
         #[arg(long)]
         value: String,
+        #[arg(long, default_value = "leader")]
+        acks: AcksArg,
     },
     Consume {
         #[arg(long, default_value = "http://127.0.0.1:9092")]
@@ -64,6 +73,14 @@ enum Command {
     },
 }
 
+fn acks_to_proto(a: &AcksArg) -> i32 {
+    match a {
+        AcksArg::None => proto::Acks::None.into(),
+        AcksArg::Leader => proto::Acks::Leader.into(),
+        AcksArg::All => proto::Acks::All.into(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -75,6 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             partition,
             key,
             value,
+            acks,
         } => {
             let mut client = connect(&server).await?;
             let resp = client
@@ -83,12 +101,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     partition,
                     key: key.into_bytes(),
                     value: value.into_bytes(),
-                    acks: proto::Acks::Leader.into(),
+                    acks: acks_to_proto(&acks),
                 })
                 .await?
                 .into_inner();
 
-            check_error(&resp.error);
+            check_error(&resp.error, resp.leader_broker_id);
             println!("partition={} offset={}", resp.partition, resp.offset);
         }
         Command::Consume {
@@ -113,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await?
                     .into_inner();
 
-                check_error(&resp.error);
+                check_error(&resp.error, resp.leader_broker_id);
 
                 for record in &resp.records {
                     let key_str = String::from_utf8_lossy(&record.key);
@@ -150,8 +168,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?
                 .into_inner();
 
-            check_error(&resp.error);
-            println!("created topic {} with {} partition(s)", name, partitions);
+            check_error(&resp.error, None);
+            println!(
+                "created topic {} with {} partition(s), rf={}",
+                name, partitions, replication_factor
+            );
+
+            let meta = client
+                .get_metadata(proto::GetMetadataRequest { topics: vec![name] })
+                .await?
+                .into_inner();
+            for t in &meta.topics {
+                print_partition_table(t);
+            }
         }
         Command::DeleteTopic { server, name } => {
             let mut client = connect(&server).await?;
@@ -160,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?
                 .into_inner();
 
-            check_error(&resp.error);
+            check_error(&resp.error, None);
             println!("deleted topic {}", name);
         }
         Command::ListTopics { server } => {
@@ -170,17 +199,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?
                 .into_inner();
 
-            check_error(&resp.error);
+            check_error(&resp.error, None);
 
             if resp.topics.is_empty() {
                 println!("no topics");
             } else {
-                println!("{:<20} {:>10} {:>12}", "TOPIC", "PARTITIONS", "REPLICATION");
                 for t in &resp.topics {
                     println!(
-                        "{:<20} {:>10} {:>12}",
+                        "topic={} partitions={} rf={}",
                         t.name, t.partition_count, t.replication_factor
                     );
+                    print_partition_table(t);
+                    println!();
                 }
             }
         }
@@ -189,10 +219,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn check_error(error: &Option<proto::Error>) {
+fn print_partition_table(t: &proto::TopicInfo) {
+    if t.partitions.is_empty() {
+        return;
+    }
+    println!(
+        "  {:<10} {:>8} {:>20} {:>20} {:>6} {:>6}",
+        "PARTITION", "LEADER", "REPLICAS", "ISR", "HWM", "LEO"
+    );
+    for p in &t.partitions {
+        let replicas: Vec<String> = p.replica_broker_ids.iter().map(|r| r.to_string()).collect();
+        let isr: Vec<String> = p.isr_broker_ids.iter().map(|r| r.to_string()).collect();
+        println!(
+            "  {:<10} {:>8} {:>20} {:>20} {:>6} {:>6}",
+            p.partition_id,
+            p.leader_broker_id,
+            replicas.join(","),
+            isr.join(","),
+            p.high_watermark,
+            p.log_end_offset,
+        );
+    }
+}
+
+fn check_error(error: &Option<proto::Error>, leader_hint: Option<u32>) {
     if let Some(err) = error {
         if err.code != proto::ErrorCode::None as i32 {
             eprintln!("error: {}", err.message);
+            if err.code == proto::ErrorCode::NotLeaderForPartition as i32 {
+                if let Some(leader_id) = leader_hint {
+                    eprintln!("hint: leader is broker {}", leader_id);
+                }
+            }
             std::process::exit(1);
         }
     }
