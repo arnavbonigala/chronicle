@@ -90,6 +90,38 @@ impl Segment {
         Ok(offset)
     }
 
+    pub fn append_at(&mut self, offset: u64, key: &[u8], value: &[u8]) -> Result<u64> {
+        if offset != self.next_offset {
+            return Err(StorageError::OffsetOutOfRange {
+                requested: offset,
+                earliest: self.base_offset,
+                latest: self.next_offset,
+            });
+        }
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let record = Record {
+            offset,
+            timestamp_ms,
+            key: Bytes::copy_from_slice(key),
+            value: Bytes::copy_from_slice(value),
+        };
+
+        let position = self.size as u32;
+        record.write_to(&mut self.log_file)?;
+        self.log_file.flush()?;
+
+        let relative_offset = (offset - self.base_offset) as u32;
+        self.index.append(relative_offset, position)?;
+
+        self.size += record.encoded_size() as u64;
+        self.next_offset = offset + 1;
+        Ok(offset)
+    }
+
     pub fn read_at(&self, offset: u64) -> Result<Record> {
         if offset < self.base_offset || offset >= self.next_offset {
             return Err(StorageError::OffsetOutOfRange {

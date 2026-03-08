@@ -65,6 +65,19 @@ impl Log {
         active.append(key, value)
     }
 
+    pub fn append_at(&mut self, offset: u64, key: &[u8], value: &[u8]) -> Result<u64> {
+        let active = self.segments.last().unwrap();
+        if active.size() >= self.config.segment_max_bytes {
+            let new_base = active.next_offset();
+            let new_seg = Segment::create(&self.dir, new_base)?;
+            self.segments.push(new_seg);
+            tracing::info!(new_base_offset = new_base, "rolled to new segment");
+        }
+
+        let active = self.segments.last_mut().unwrap();
+        active.append_at(offset, key, value)
+    }
+
     /// Read up to `max_records` starting at `offset`, continuing across segment boundaries.
     pub fn read(&self, offset: u64, max_records: u32) -> Result<Vec<Record>> {
         let earliest = self.earliest_offset();
@@ -205,5 +218,27 @@ mod tests {
         // Reading beyond latest returns empty
         let records = log.read(1, 10).unwrap();
         assert!(records.is_empty());
+    }
+
+    #[test]
+    fn append_at_correct_offset() {
+        let dir = tempdir().unwrap();
+        let mut log = Log::open(test_config(dir.path())).unwrap();
+        assert_eq!(log.append_at(0, b"k0", b"v0").unwrap(), 0);
+        assert_eq!(log.append_at(1, b"k1", b"v1").unwrap(), 1);
+        assert_eq!(log.latest_offset(), 2);
+
+        let records = log.read(0, 10).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].key.as_ref(), b"k0");
+        assert_eq!(records[1].key.as_ref(), b"k1");
+    }
+
+    #[test]
+    fn append_at_wrong_offset() {
+        let dir = tempdir().unwrap();
+        let mut log = Log::open(test_config(dir.path())).unwrap();
+        let err = log.append_at(5, b"k", b"v").unwrap_err();
+        assert!(matches!(err, StorageError::OffsetOutOfRange { .. }));
     }
 }
