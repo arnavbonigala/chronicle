@@ -195,7 +195,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
 
         match self
             .store
-            .create_topic(&req.name, req.partition_count, replication_factor)
+            .create_topic(&req.name, req.partition_count, replication_factor, &[], &[])
         {
             Ok(()) => Ok(Response::new(proto::CreateTopicResponse { error: None })),
             Err(e) => Ok(Response::new(proto::CreateTopicResponse {
