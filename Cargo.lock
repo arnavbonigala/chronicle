@@ -195,6 +195,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "chronicle-replication"
+version = "0.1.0"
+dependencies = [
+ "chronicle-storage",
+ "prost",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tracing",
+]
+
+[[package]]
 name = "chronicle-server"
 version = "0.1.0"
 dependencies = [
