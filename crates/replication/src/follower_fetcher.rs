@@ -79,6 +79,7 @@ impl FollowerFetcher {
                     topic: self.topic.clone(),
                     partition: self.partition,
                     fetch_offset: local_leo,
+                    leader_epoch: 0,
                 })
                 .await?
                 .into_inner();

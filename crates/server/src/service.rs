@@ -454,6 +454,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                                 isr_broker_ids: pi.isr,
                                 high_watermark: pi.high_watermark,
                                 log_end_offset: leo,
+                                leader_epoch: 0,
                             },
                             None => proto::PartitionInfo {
                                 partition_id: pid,
@@ -462,6 +463,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                                 isr_broker_ids: vec![self.cluster.broker_id],
                                 high_watermark: leo,
                                 log_end_offset: leo,
+                                leader_epoch: 0,
                             },
                         }
                     })
@@ -496,6 +498,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                     code: proto::ErrorCode::NotLeaderForPartition.into(),
                     message: "not leader for this partition".into(),
                 }),
+                leader_epoch: 0,
             }));
         }
 
@@ -510,6 +513,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                         code: proto::ErrorCode::UnknownTopic.into(),
                         message: format!("unknown topic: {}", req.topic),
                     }),
+                    leader_epoch: 0,
                 }));
             }
         };
@@ -525,6 +529,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                         code: proto::ErrorCode::UnknownPartition.into(),
                         message: format!("partition {} not found", req.partition),
                     }),
+                    leader_epoch: 0,
                 }));
             }
         };
@@ -560,6 +565,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             leader_leo,
             high_watermark: hwm,
             error: None,
+            leader_epoch: 0,
         }))
     }
 

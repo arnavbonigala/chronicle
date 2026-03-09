@@ -11,6 +11,16 @@ service Chronicle {
   rpc CreateReplica(CreateReplicaRequest) returns (CreateReplicaResponse);
 }
 
+service ControllerService {
+  rpc RaftAppendEntries(RaftPayload) returns (RaftPayload);
+  rpc RaftVote(RaftPayload) returns (RaftPayload);
+  rpc RaftInstallSnapshot(RaftPayload) returns (RaftPayload);
+  rpc RegisterBroker(RegisterBrokerRequest) returns (RegisterBrokerResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ProposeCommand(ProposeCommandRequest) returns (ProposeCommandResponse);
+  rpc FetchClusterState(FetchClusterStateRequest) returns (FetchClusterStateResponse);
+}
+
 enum Acks {
   ACKS_LEADER = 0;
   ACKS_NONE = 1;
@@ -94,6 +104,7 @@ message PartitionInfo {
   repeated uint32 isr_broker_ids = 4;
   uint64 high_watermark = 5;
   uint64 log_end_offset = 6;
+  uint64 leader_epoch = 7;
 }
 
 message ReplicateFetchRequest {
@@ -101,6 +112,7 @@ message ReplicateFetchRequest {
   string topic = 2;
   uint32 partition = 3;
   uint64 fetch_offset = 4;
+  uint64 leader_epoch = 5;
 }
 
 message ReplicateFetchResponse {
@@ -108,6 +120,7 @@ message ReplicateFetchResponse {
   uint64 leader_leo = 2;
   uint64 high_watermark = 3;
   Error error = 4;
+  uint64 leader_epoch = 5;
 }
 
 message CreateReplicaRequest {
@@ -125,6 +138,45 @@ message ProtoPartitionAssignment {
 
 message CreateReplicaResponse {
   Error error = 1;
+}
+
+message RaftPayload {
+  bytes data = 1;
+}
+
+message RegisterBrokerRequest {
+  uint32 broker_id = 1;
+  string addr = 2;
+}
+
+message RegisterBrokerResponse {
+  bool success = 1;
+  Error error = 2;
+}
+
+message HeartbeatRequest {
+  uint32 broker_id = 1;
+}
+
+message HeartbeatResponse {
+  bool success = 1;
+  Error error = 2;
+}
+
+message ProposeCommandRequest {
+  bytes command = 1;
+}
+
+message ProposeCommandResponse {
+  bytes response = 1;
+  Error error = 2;
+}
+
+message FetchClusterStateRequest {}
+
+message FetchClusterStateResponse {
+  bytes state = 1;
+  Error error = 2;
 }
 
 message Error {
