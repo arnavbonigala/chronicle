@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+chronicle-replication = { path = "../replication" }
 chronicle-storage = { path = "../storage" }
 openraft = { version = "0.9", features = ["serde", "storage-v2"] }
 serde = { version = "1", features = ["derive"] }

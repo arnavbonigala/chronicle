@@ -324,6 +324,7 @@ dependencies = [
 name = "chronicle-controller"
 version = "0.1.0"
 dependencies = [
+ "chronicle-replication",
  "chronicle-storage",
  "openraft",
  "prost",
