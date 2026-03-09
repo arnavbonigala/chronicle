@@ -1,6 +1,20 @@
 use std::collections::HashMap;
+use std::io::Cursor;
 
+use openraft::BasicNode;
 use serde::{Deserialize, Serialize};
+
+pub type NodeId = u64;
+
+openraft::declare_raft_types!(
+    pub TypeConfig:
+        D = MetadataRequest,
+        R = MetadataResponse,
+        NodeId = u64,
+        Node = BasicNode,
+        Entry = openraft::Entry<TypeConfig>,
+        SnapshotData = Cursor<Vec<u8>>,
+);
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum MetadataRequest {
@@ -49,6 +63,19 @@ pub enum MetadataResponse {
 pub struct ClusterState {
     pub brokers: HashMap<u32, BrokerRegistration>,
     pub topics: HashMap<String, TopicMetadata>,
+}
+
+impl ClusterState {
+    pub fn live_broker_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self
+            .brokers
+            .values()
+            .filter(|b| b.status == BrokerStatus::Live)
+            .map(|b| b.id)
+            .collect();
+        ids.sort();
+        ids
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
