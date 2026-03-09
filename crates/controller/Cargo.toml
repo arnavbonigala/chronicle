@@ -1,0 +1,20 @@
+[package]
+name = "chronicle-controller"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chronicle-storage = { path = "../storage" }
+openraft = { version = "0.9", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+prost = "0.13"
+tokio = { version = "1", features = ["full"] }
+tonic = "0.12"
+tracing = "0.1"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
