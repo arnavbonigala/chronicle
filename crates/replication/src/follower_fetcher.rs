@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use chronicle_storage::TopicStore;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::replica_manager::ReplicaManager;
 
@@ -20,6 +21,7 @@ pub struct FollowerFetcher {
     pub store: Arc<TopicStore>,
     pub replica_manager: Arc<ReplicaManager>,
     pub fetch_interval: Duration,
+    pub cancel: CancellationToken,
 }
 
 impl FollowerFetcher {
@@ -42,17 +44,29 @@ impl FollowerFetcher {
         let max_backoff = Duration::from_secs(5);
 
         loop {
-            match self.connect_and_fetch(&mut backoff, max_backoff).await {
-                Ok(()) => {}
-                Err(e) => {
-                    tracing::warn!(
+            tokio::select! {
+                _ = self.cancel.cancelled() => {
+                    tracing::info!(
                         topic = %self.topic,
                         partition = self.partition,
-                        error = %e,
-                        "follower fetch error, backing off"
+                        "follower fetcher cancelled"
                     );
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(max_backoff);
+                    return;
+                }
+                result = self.connect_and_fetch(&mut backoff, max_backoff) => {
+                    match result {
+                        Ok(()) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                topic = %self.topic,
+                                partition = self.partition,
+                                error = %e,
+                                "follower fetch error, backing off"
+                            );
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(max_backoff);
+                        }
+                    }
                 }
             }
         }
@@ -71,7 +85,14 @@ impl FollowerFetcher {
         );
 
         loop {
+            if self.cancel.is_cancelled() {
+                return Ok(());
+            }
+
             let local_leo = self.get_local_leo();
+            let leader_epoch = self
+                .replica_manager
+                .leader_epoch(&self.topic, self.partition);
 
             let resp = client
                 .replicate_fetch(proto::ReplicateFetchRequest {
@@ -79,7 +100,7 @@ impl FollowerFetcher {
                     topic: self.topic.clone(),
                     partition: self.partition,
                     fetch_offset: local_leo,
-                    leader_epoch: 0,
+                    leader_epoch,
                 })
                 .await?
                 .into_inner();

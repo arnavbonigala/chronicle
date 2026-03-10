@@ -91,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
                 store: store.clone(),
                 replica_manager: replica_manager.clone(),
                 fetch_interval: Duration::from_millis(100),
+                cancel: tokio_util::sync::CancellationToken::new(),
             }
             .spawn();
         }

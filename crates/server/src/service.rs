@@ -630,6 +630,7 @@ impl ChronicleService {
                     store: self.store.clone(),
                     replica_manager: self.replica_manager.clone(),
                     fetch_interval: Duration::from_millis(100),
+                    cancel: tokio_util::sync::CancellationToken::new(),
                 }
                 .spawn();
             }
