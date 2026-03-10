@@ -13,9 +13,12 @@ use tokio::sync::{broadcast, RwLock};
 
 use chronicle_replication::assignment::compute_assignments;
 
+use std::collections::BTreeSet;
+
 use crate::types::{
-    BrokerRegistration, BrokerStatus, ClusterState, MetadataChange, MetadataRequest,
-    MetadataResponse, NodeId, PartitionAssignmentMeta, TopicMetadata, TypeConfig,
+    BrokerRegistration, BrokerStatus, ClusterState, CommittedOffset, ConsumerGroupState,
+    GroupMember, MetadataChange, MetadataRequest, MetadataResponse, NodeId,
+    PartitionAssignmentMeta, TopicMetadata, TopicPartitionKey, TypeConfig,
 };
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
@@ -193,12 +196,114 @@ impl StateMachineStore {
                     .ok();
                 MetadataResponse::Ok
             }
-            MetadataRequest::JoinGroup { .. }
-            | MetadataRequest::LeaveGroup { .. }
-            | MetadataRequest::ConsumerHeartbeat { .. }
-            | MetadataRequest::CommitOffset { .. }
-            | MetadataRequest::RemoveExpiredMember { .. } => {
-                MetadataResponse::Error("consumer group operations not yet implemented".into())
+            MetadataRequest::JoinGroup {
+                group_id,
+                member_id,
+                topics,
+                session_timeout_ms,
+            } => {
+                let group = sm
+                    .cluster_state
+                    .consumer_groups
+                    .entry(group_id.clone())
+                    .or_insert_with(|| ConsumerGroupState {
+                        group_id: group_id.clone(),
+                        ..Default::default()
+                    });
+                group.members.insert(
+                    member_id.clone(),
+                    GroupMember {
+                        member_id: member_id.clone(),
+                        subscriptions: topics.clone(),
+                        session_timeout_ms: *session_timeout_ms,
+                        last_heartbeat_ms: current_time_ms(),
+                    },
+                );
+                group.generation_id += 1;
+                group.assignments =
+                    compute_group_assignments(&group.members, &sm.cluster_state.topics);
+                let member_assignments = group
+                    .assignments
+                    .get(member_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let gen = group.generation_id;
+                MetadataResponse::GroupJoined {
+                    generation_id: gen,
+                    member_id: member_id.clone(),
+                    assignments: member_assignments
+                        .into_iter()
+                        .map(|tp| (tp.topic, tp.partition))
+                        .collect(),
+                }
+            }
+            MetadataRequest::LeaveGroup {
+                group_id,
+                member_id,
+            } => {
+                if let Some(group) = sm.cluster_state.consumer_groups.get_mut(group_id) {
+                    group.members.remove(member_id);
+                    if group.members.is_empty() {
+                        sm.cluster_state.consumer_groups.remove(group_id);
+                    } else {
+                        group.generation_id += 1;
+                        group.assignments =
+                            compute_group_assignments(&group.members, &sm.cluster_state.topics);
+                    }
+                }
+                MetadataResponse::Ok
+            }
+            MetadataRequest::ConsumerHeartbeat {
+                group_id,
+                member_id,
+            } => {
+                if let Some(group) = sm.cluster_state.consumer_groups.get_mut(group_id) {
+                    if let Some(member) = group.members.get_mut(member_id) {
+                        member.last_heartbeat_ms = current_time_ms();
+                        return MetadataResponse::GroupState {
+                            generation_id: group.generation_id,
+                        };
+                    }
+                    return MetadataResponse::Error(format!("member not found: {member_id}"));
+                }
+                MetadataResponse::Error(format!("consumer group not found: {group_id}"))
+            }
+            MetadataRequest::CommitOffset { group_id, offsets } => {
+                if let Some(group) = sm.cluster_state.consumer_groups.get_mut(group_id) {
+                    let now = current_time_ms();
+                    for (topic, partition, offset) in offsets {
+                        group.offsets.insert(
+                            TopicPartitionKey {
+                                topic: topic.clone(),
+                                partition: *partition,
+                            },
+                            CommittedOffset {
+                                offset: *offset,
+                                timestamp_ms: now,
+                            },
+                        );
+                    }
+                    MetadataResponse::Ok
+                } else {
+                    MetadataResponse::Error(format!("consumer group not found: {group_id}"))
+                }
+            }
+            MetadataRequest::RemoveExpiredMember {
+                group_id,
+                member_id,
+            } => {
+                if let Some(group) = sm.cluster_state.consumer_groups.get_mut(group_id) {
+                    if group.members.remove(member_id).is_some() {
+                        if group.members.is_empty() {
+                            sm.cluster_state.consumer_groups.remove(group_id);
+                        } else {
+                            group.generation_id += 1;
+                            group.assignments =
+                                compute_group_assignments(&group.members, &sm.cluster_state.topics);
+                        }
+                    }
+                }
+                MetadataResponse::Ok
             }
         }
     }
@@ -320,6 +425,43 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
             None => Ok(None),
         }
     }
+}
+
+fn compute_group_assignments(
+    members: &std::collections::HashMap<String, GroupMember>,
+    topics: &std::collections::HashMap<String, TopicMetadata>,
+) -> std::collections::HashMap<String, Vec<TopicPartitionKey>> {
+    let mut subscribed: BTreeSet<&str> = BTreeSet::new();
+    for member in members.values() {
+        for t in &member.subscriptions {
+            subscribed.insert(t);
+        }
+    }
+    let mut all_partitions = Vec::new();
+    for topic_name in &subscribed {
+        if let Some(meta) = topics.get(*topic_name) {
+            for p in 0..meta.partition_count {
+                all_partitions.push(TopicPartitionKey {
+                    topic: topic_name.to_string(),
+                    partition: p,
+                });
+            }
+        }
+    }
+    let mut member_ids: Vec<&String> = members.keys().collect();
+    member_ids.sort();
+    let mut assignments: std::collections::HashMap<String, Vec<TopicPartitionKey>> = member_ids
+        .iter()
+        .map(|id| ((*id).clone(), Vec::new()))
+        .collect();
+    if member_ids.is_empty() {
+        return assignments;
+    }
+    for (i, tp) in all_partitions.iter().enumerate() {
+        let mid = member_ids[i % member_ids.len()];
+        assignments.get_mut(mid).unwrap().push(tp.clone());
+    }
+    assignments
 }
 
 fn current_time_ms() -> u64 {
@@ -497,5 +639,326 @@ mod tests {
             },
         );
         assert!(matches!(resp, MetadataResponse::Error(_)));
+    }
+
+    fn setup_with_topic(
+        store: &StateMachineStore,
+        sm: &mut StateMachineData,
+        topic: &str,
+        partitions: u32,
+    ) {
+        store.apply_command(
+            sm,
+            &MetadataRequest::RegisterBroker {
+                id: 1,
+                addr: "a".into(),
+            },
+        );
+        store.apply_command(
+            sm,
+            &MetadataRequest::CreateTopic {
+                name: topic.into(),
+                partition_count: partitions,
+                replication_factor: 1,
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn join_group_single_member() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        setup_with_topic(&store, &mut sm, "orders", 4);
+
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::JoinGroup {
+                group_id: "g1".into(),
+                member_id: "c1".into(),
+                topics: vec!["orders".into()],
+                session_timeout_ms: 10000,
+            },
+        );
+
+        match resp {
+            MetadataResponse::GroupJoined {
+                generation_id,
+                member_id,
+                assignments,
+            } => {
+                assert_eq!(generation_id, 1);
+                assert_eq!(member_id, "c1");
+                assert_eq!(assignments.len(), 4);
+            }
+            other => panic!("expected GroupJoined, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn join_group_two_members_splits_partitions() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        setup_with_topic(&store, &mut sm, "orders", 4);
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::JoinGroup {
+                group_id: "g1".into(),
+                member_id: "c1".into(),
+                topics: vec!["orders".into()],
+                session_timeout_ms: 10000,
+            },
+        );
+
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::JoinGroup {
+                group_id: "g1".into(),
+                member_id: "c2".into(),
+                topics: vec!["orders".into()],
+                session_timeout_ms: 10000,
+            },
+        );
+
+        match resp {
+            MetadataResponse::GroupJoined {
+                generation_id,
+                assignments,
+                ..
+            } => {
+                assert_eq!(generation_id, 2);
+                assert_eq!(assignments.len(), 2);
+            }
+            other => panic!("expected GroupJoined, got {other:?}"),
+        }
+
+        let state = &sm.cluster_state;
+        let group = &state.consumer_groups["g1"];
+        let total: usize = group.assignments.values().map(|v| v.len()).sum();
+        assert_eq!(total, 4);
+        assert_eq!(group.assignments["c1"].len(), 2);
+        assert_eq!(group.assignments["c2"].len(), 2);
+    }
+
+    #[tokio::test]
+    async fn leave_group_reassigns() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        setup_with_topic(&store, &mut sm, "orders", 4);
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::JoinGroup {
+                group_id: "g1".into(),
+                member_id: "c1".into(),
+                topics: vec!["orders".into()],
+                session_timeout_ms: 10000,
+            },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::JoinGroup {
+                group_id: "g1".into(),
+                member_id: "c2".into(),
+                topics: vec!["orders".into()],
+                session_timeout_ms: 10000,
+            },
+        );
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::LeaveGroup {
+                group_id: "g1".into(),
+                member_id: "c2".into(),
+            },
+        );
+
+        let group = &sm.cluster_state.consumer_groups["g1"];
+        assert_eq!(group.generation_id, 3);
+        assert_eq!(group.members.len(), 1);
+        assert_eq!(group.assignments["c1"].len(), 4);
+    }
+
+    #[tokio::test]
+    async fn leave_group_last_member_removes_group() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        setup_with_topic(&store, &mut sm, "orders", 2);
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::JoinGroup {
+                group_id: "g1".into(),
+                member_id: "c1".into(),
+                topics: vec!["orders".into()],
+                session_timeout_ms: 10000,
+            },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::LeaveGroup {
+                group_id: "g1".into(),
+                member_id: "c1".into(),
+            },
+        );
+
+        assert!(!sm.cluster_state.consumer_groups.contains_key("g1"));
+    }
+
+    #[tokio::test]
+    async fn commit_and_overwrite_offsets() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        setup_with_topic(&store, &mut sm, "orders", 2);
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::JoinGroup {
+                group_id: "g1".into(),
+                member_id: "c1".into(),
+                topics: vec!["orders".into()],
+                session_timeout_ms: 10000,
+            },
+        );
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::CommitOffset {
+                group_id: "g1".into(),
+                offsets: vec![("orders".into(), 0, 10), ("orders".into(), 1, 20)],
+            },
+        );
+
+        let group = &sm.cluster_state.consumer_groups["g1"];
+        let key0 = TopicPartitionKey {
+            topic: "orders".into(),
+            partition: 0,
+        };
+        let key1 = TopicPartitionKey {
+            topic: "orders".into(),
+            partition: 1,
+        };
+        assert_eq!(group.offsets[&key0].offset, 10);
+        assert_eq!(group.offsets[&key1].offset, 20);
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::CommitOffset {
+                group_id: "g1".into(),
+                offsets: vec![("orders".into(), 0, 50)],
+            },
+        );
+
+        let group = &sm.cluster_state.consumer_groups["g1"];
+        assert_eq!(group.offsets[&key0].offset, 50);
+        assert_eq!(group.offsets[&key1].offset, 20);
+    }
+
+    #[tokio::test]
+    async fn remove_expired_member() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        setup_with_topic(&store, &mut sm, "orders", 4);
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::JoinGroup {
+                group_id: "g1".into(),
+                member_id: "c1".into(),
+                topics: vec!["orders".into()],
+                session_timeout_ms: 10000,
+            },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::JoinGroup {
+                group_id: "g1".into(),
+                member_id: "c2".into(),
+                topics: vec!["orders".into()],
+                session_timeout_ms: 10000,
+            },
+        );
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::RemoveExpiredMember {
+                group_id: "g1".into(),
+                member_id: "c2".into(),
+            },
+        );
+
+        let group = &sm.cluster_state.consumer_groups["g1"];
+        assert_eq!(group.generation_id, 3);
+        assert_eq!(group.members.len(), 1);
+        assert_eq!(group.assignments["c1"].len(), 4);
+    }
+
+    #[tokio::test]
+    async fn consumer_heartbeat_returns_generation() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        setup_with_topic(&store, &mut sm, "orders", 2);
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::JoinGroup {
+                group_id: "g1".into(),
+                member_id: "c1".into(),
+                topics: vec!["orders".into()],
+                session_timeout_ms: 10000,
+            },
+        );
+
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::ConsumerHeartbeat {
+                group_id: "g1".into(),
+                member_id: "c1".into(),
+            },
+        );
+
+        match resp {
+            MetadataResponse::GroupState { generation_id } => {
+                assert_eq!(generation_id, 1);
+            }
+            other => panic!("expected GroupState, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn assignment_is_deterministic() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        setup_with_topic(&store, &mut sm, "orders", 4);
+
+        for _ in 0..3 {
+            sm.cluster_state.consumer_groups.clear();
+            store.apply_command(
+                &mut sm,
+                &MetadataRequest::JoinGroup {
+                    group_id: "g1".into(),
+                    member_id: "c1".into(),
+                    topics: vec!["orders".into()],
+                    session_timeout_ms: 10000,
+                },
+            );
+            store.apply_command(
+                &mut sm,
+                &MetadataRequest::JoinGroup {
+                    group_id: "g1".into(),
+                    member_id: "c2".into(),
+                    topics: vec!["orders".into()],
+                    session_timeout_ms: 10000,
+                },
+            );
+        }
+
+        let group = &sm.cluster_state.consumer_groups["g1"];
+        assert_eq!(group.assignments["c1"].len(), 2);
+        assert_eq!(group.assignments["c2"].len(), 2);
+        assert_eq!(group.assignments["c1"][0].partition, 0);
+        assert_eq!(group.assignments["c1"][1].partition, 2);
+        assert_eq!(group.assignments["c2"][0].partition, 1);
+        assert_eq!(group.assignments["c2"][1].partition, 3);
     }
 }
