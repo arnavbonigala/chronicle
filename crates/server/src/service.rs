@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chronicle_controller::Controller;
+use chronicle_controller::{Controller, MetadataRequest, MetadataResponse};
 use chronicle_replication::assignment::{compute_assignments, local_partitions};
 use chronicle_replication::{ClusterConfig, FollowerFetcher, ReplicaManager};
 use chronicle_storage::{PartitionAssignment, StorageError, TopicStore};
@@ -10,7 +10,6 @@ use tonic::{Request, Response, Status};
 
 use crate::proto;
 
-#[allow(dead_code)]
 pub struct ChronicleService {
     store: Arc<TopicStore>,
     replica_manager: Arc<ReplicaManager>,
@@ -308,6 +307,33 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             req.replication_factor
         };
 
+        if let Some(ref ctrl) = self.controller {
+            let resp = ctrl
+                .propose(MetadataRequest::CreateTopic {
+                    name: req.name.clone(),
+                    partition_count: req.partition_count,
+                    replication_factor,
+                })
+                .await;
+            return match resp {
+                Ok(MetadataResponse::TopicCreated { .. }) | Ok(MetadataResponse::Ok) => {
+                    Ok(Response::new(proto::CreateTopicResponse { error: None }))
+                }
+                Ok(MetadataResponse::Error(msg)) => Ok(Response::new(proto::CreateTopicResponse {
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::TopicAlreadyExists.into(),
+                        message: msg,
+                    }),
+                })),
+                Err(e) => Ok(Response::new(proto::CreateTopicResponse {
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InternalError.into(),
+                        message: e,
+                    }),
+                })),
+            };
+        }
+
         let broker_ids = self.cluster.broker_ids();
         let assignments = if broker_ids.len() > 1 {
             compute_assignments(req.partition_count, replication_factor, &broker_ids)
@@ -415,6 +441,23 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             }));
         }
 
+        if let Some(ref ctrl) = self.controller {
+            return match ctrl
+                .propose(MetadataRequest::DeleteTopic {
+                    name: req.name.clone(),
+                })
+                .await
+            {
+                Ok(_) => Ok(Response::new(proto::DeleteTopicResponse { error: None })),
+                Err(e) => Ok(Response::new(proto::DeleteTopicResponse {
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InternalError.into(),
+                        message: e,
+                    }),
+                })),
+            };
+        }
+
         match self.store.delete_topic(&req.name) {
             Ok(()) => Ok(Response::new(proto::DeleteTopicResponse { error: None })),
             Err(e) => Ok(Response::new(proto::DeleteTopicResponse {
@@ -428,8 +471,52 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
         request: Request<proto::GetMetadataRequest>,
     ) -> Result<Response<proto::GetMetadataResponse>, Status> {
         let req = request.into_inner();
-        let all = self.store.list_topics();
 
+        if let Some(ref ctrl) = self.controller {
+            let state = ctrl.cluster_state().await;
+            let topics: Vec<proto::TopicInfo> = state
+                .topics
+                .values()
+                .filter(|t| req.topics.is_empty() || req.topics.contains(&t.name))
+                .map(|t| {
+                    let partitions = t
+                        .assignments
+                        .iter()
+                        .map(|a| proto::PartitionInfo {
+                            partition_id: a.partition_id,
+                            leader_broker_id: a.leader,
+                            replica_broker_ids: a.replicas.clone(),
+                            isr_broker_ids: a.isr.clone(),
+                            high_watermark: self
+                                .replica_manager
+                                .high_watermark(&t.name, a.partition_id),
+                            log_end_offset: self
+                                .store
+                                .topic(&t.name)
+                                .and_then(|tp| {
+                                    tp.partition(a.partition_id)
+                                        .map(|l| l.read().unwrap().latest_offset())
+                                })
+                                .unwrap_or(0),
+                            leader_epoch: a.leader_epoch,
+                        })
+                        .collect();
+                    proto::TopicInfo {
+                        name: t.name.clone(),
+                        partition_count: t.partition_count,
+                        replication_factor: t.replication_factor,
+                        partitions,
+                    }
+                })
+                .collect();
+
+            return Ok(Response::new(proto::GetMetadataResponse {
+                topics,
+                error: None,
+            }));
+        }
+
+        let all = self.store.list_topics();
         let topic_list: Vec<&chronicle_storage::TopicMeta> = if req.topics.is_empty() {
             all.iter().collect()
         } else {
@@ -451,6 +538,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                                 t.partition(pid).map(|l| l.read().unwrap().latest_offset())
                             })
                             .unwrap_or(0);
+                        let epoch = self.replica_manager.leader_epoch(&m.name, pid);
                         match info {
                             Some(pi) => proto::PartitionInfo {
                                 partition_id: pid,
@@ -459,7 +547,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                                 isr_broker_ids: pi.isr,
                                 high_watermark: pi.high_watermark,
                                 log_end_offset: leo,
-                                leader_epoch: 0,
+                                leader_epoch: epoch,
                             },
                             None => proto::PartitionInfo {
                                 partition_id: pid,
@@ -468,7 +556,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                                 isr_broker_ids: vec![self.cluster.broker_id],
                                 high_watermark: leo,
                                 log_end_offset: leo,
-                                leader_epoch: 0,
+                                leader_epoch: epoch,
                             },
                         }
                     })
@@ -493,6 +581,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
         request: Request<proto::ReplicateFetchRequest>,
     ) -> Result<Response<proto::ReplicateFetchResponse>, Status> {
         let req = request.into_inner();
+        let current_epoch = self.replica_manager.leader_epoch(&req.topic, req.partition);
 
         if !self.replica_manager.is_leader(&req.topic, req.partition) {
             return Ok(Response::new(proto::ReplicateFetchResponse {
@@ -503,7 +592,23 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                     code: proto::ErrorCode::NotLeaderForPartition.into(),
                     message: "not leader for this partition".into(),
                 }),
-                leader_epoch: 0,
+                leader_epoch: current_epoch,
+            }));
+        }
+
+        if req.leader_epoch != 0 && req.leader_epoch != current_epoch {
+            return Ok(Response::new(proto::ReplicateFetchResponse {
+                records: vec![],
+                leader_leo: 0,
+                high_watermark: 0,
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::NotLeaderForPartition.into(),
+                    message: format!(
+                        "epoch mismatch: request={} current={}",
+                        req.leader_epoch, current_epoch
+                    ),
+                }),
+                leader_epoch: current_epoch,
             }));
         }
 
@@ -518,7 +623,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                         code: proto::ErrorCode::UnknownTopic.into(),
                         message: format!("unknown topic: {}", req.topic),
                     }),
-                    leader_epoch: 0,
+                    leader_epoch: current_epoch,
                 }));
             }
         };
@@ -534,7 +639,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                         code: proto::ErrorCode::UnknownPartition.into(),
                         message: format!("partition {} not found", req.partition),
                     }),
-                    leader_epoch: 0,
+                    leader_epoch: current_epoch,
                 }));
             }
         };
@@ -570,7 +675,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             leader_leo,
             high_watermark: hwm,
             error: None,
-            leader_epoch: 0,
+            leader_epoch: current_epoch,
         }))
     }
 
