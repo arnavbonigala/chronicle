@@ -224,16 +224,17 @@ fn print_partition_table(t: &proto::TopicInfo) {
         return;
     }
     println!(
-        "  {:<10} {:>8} {:>20} {:>20} {:>6} {:>6}",
-        "PARTITION", "LEADER", "REPLICAS", "ISR", "HWM", "LEO"
+        "  {:<10} {:>8} {:>6} {:>20} {:>20} {:>6} {:>6}",
+        "PARTITION", "LEADER", "EPOCH", "REPLICAS", "ISR", "HWM", "LEO"
     );
     for p in &t.partitions {
         let replicas: Vec<String> = p.replica_broker_ids.iter().map(|r| r.to_string()).collect();
         let isr: Vec<String> = p.isr_broker_ids.iter().map(|r| r.to_string()).collect();
         println!(
-            "  {:<10} {:>8} {:>20} {:>20} {:>6} {:>6}",
+            "  {:<10} {:>8} {:>6} {:>20} {:>20} {:>6} {:>6}",
             p.partition_id,
             p.leader_broker_id,
+            p.leader_epoch,
             replicas.join(","),
             isr.join(","),
             p.high_watermark,
