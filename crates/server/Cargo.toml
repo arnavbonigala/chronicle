@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+chronicle-controller = { path = "../controller" }
 chronicle-replication = { path = "../replication" }
 chronicle-storage = { path = "../storage" }
 clap = { version = "4", features = ["derive"] }

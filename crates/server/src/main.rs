@@ -1,3 +1,4 @@
+mod metadata_reactor;
 mod service;
 
 use std::path::PathBuf;
