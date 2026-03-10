@@ -20,11 +20,13 @@ struct LeaderState {
     hwm_tx: watch::Sender<u64>,
     #[allow(dead_code)]
     hwm_rx: watch::Receiver<u64>,
+    leader_epoch: u64,
 }
 
 struct FollowerState {
     leader_id: u32,
     high_watermark: u64,
+    leader_epoch: u64,
 }
 
 enum PartitionReplicaState {
@@ -96,6 +98,7 @@ impl ReplicaManager {
                         high_watermark: 0,
                         hwm_tx,
                         hwm_rx,
+                        leader_epoch: 0,
                     }),
                 );
             } else {
@@ -104,6 +107,7 @@ impl ReplicaManager {
                     PartitionReplicaState::Follower(FollowerState {
                         leader_id,
                         high_watermark: 0,
+                        leader_epoch: 0,
                     }),
                 );
             }
@@ -268,6 +272,90 @@ impl ReplicaManager {
                 } else {
                     None
                 }
+            })
+            .collect()
+    }
+
+    pub fn leader_epoch(&self, topic: &str, partition: u32) -> u64 {
+        let state = self.state.read().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        match state.get(&key) {
+            Some(PartitionReplicaState::Leader(l)) => l.leader_epoch,
+            Some(PartitionReplicaState::Follower(f)) => f.leader_epoch,
+            None => 0,
+        }
+    }
+
+    pub fn promote_to_leader(&self, topic: &str, partition: u32, epoch: u64, replicas: &[u32]) {
+        let mut state = self.state.write().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        let (hwm_tx, hwm_rx) = watch::channel(0u64);
+        let followers: Vec<u32> = replicas
+            .iter()
+            .copied()
+            .filter(|&r| r != self.broker_id)
+            .collect();
+        let now = Instant::now();
+        let follower_leos: HashMap<u32, u64> = followers.iter().map(|&id| (id, 0u64)).collect();
+        let follower_last_fetch: HashMap<u32, Instant> =
+            followers.iter().map(|&id| (id, now)).collect();
+        state.insert(
+            key,
+            PartitionReplicaState::Leader(LeaderState {
+                replicas: replicas.to_vec(),
+                isr: replicas.to_vec(),
+                follower_leos,
+                follower_last_fetch,
+                high_watermark: 0,
+                hwm_tx,
+                hwm_rx,
+                leader_epoch: epoch,
+            }),
+        );
+    }
+
+    pub fn demote_to_follower(&self, topic: &str, partition: u32, new_leader: u32, epoch: u64) {
+        let mut state = self.state.write().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        state.insert(
+            key,
+            PartitionReplicaState::Follower(FollowerState {
+                leader_id: new_leader,
+                high_watermark: 0,
+                leader_epoch: epoch,
+            }),
+        );
+    }
+
+    pub fn update_leader(&self, topic: &str, partition: u32, new_leader: u32, epoch: u64) {
+        let mut state = self.state.write().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        if let Some(PartitionReplicaState::Follower(f)) = state.get_mut(&key) {
+            f.leader_id = new_leader;
+            f.leader_epoch = epoch;
+        }
+    }
+
+    pub fn registered_partitions(&self, topic: &str) -> Vec<(u32, bool)> {
+        let state = self.state.read().unwrap();
+        state
+            .iter()
+            .filter(|(k, _)| k.topic == topic)
+            .map(|(k, ps)| {
+                let is_leader = matches!(ps, PartitionReplicaState::Leader(_));
+                (k.partition, is_leader)
             })
             .collect()
     }
@@ -454,6 +542,64 @@ mod tests {
         rm.update_follower_progress("t", 0, 2, 0);
         let isr = rm.isr("t", 0);
         assert!(isr.contains(&2));
+    }
+
+    #[test]
+    fn promote_to_leader_creates_leader_state() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        assert!(!rm.is_leader("t", 1));
+
+        rm.promote_to_leader("t", 1, 5, &[2, 3, 1]);
+        assert!(rm.is_leader("t", 1));
+        assert_eq!(rm.leader_epoch("t", 1), 5);
+        assert_eq!(rm.leader_for("t", 1), Some(1));
+    }
+
+    #[test]
+    fn demote_to_follower_creates_follower_state() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        assert!(rm.is_leader("t", 0));
+
+        rm.demote_to_follower("t", 0, 2, 3);
+        assert!(!rm.is_leader("t", 0));
+        assert_eq!(rm.leader_epoch("t", 0), 3);
+        assert_eq!(rm.leader_for("t", 0), Some(2));
+    }
+
+    #[test]
+    fn epoch_tracked_through_promote_demote_cycle() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        assert_eq!(rm.leader_epoch("t", 0), 0);
+
+        rm.demote_to_follower("t", 0, 2, 1);
+        assert_eq!(rm.leader_epoch("t", 0), 1);
+
+        rm.promote_to_leader("t", 0, 2, &[1, 2, 3]);
+        assert_eq!(rm.leader_epoch("t", 0), 2);
+        assert!(rm.is_leader("t", 0));
+    }
+
+    #[test]
+    fn update_leader_changes_follower_leader() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        assert_eq!(rm.leader_for("t", 1), Some(2));
+
+        rm.update_leader("t", 1, 3, 5);
+        assert_eq!(rm.leader_for("t", 1), Some(3));
+        assert_eq!(rm.leader_epoch("t", 1), 5);
+    }
+
+    #[test]
+    fn registered_partitions_returns_all() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        let mut parts = rm.registered_partitions("t");
+        parts.sort_by_key(|p| p.0);
+        assert_eq!(parts, vec![(0, true), (1, false)]);
     }
 
     #[tokio::test]
