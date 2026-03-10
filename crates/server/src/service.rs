@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use chronicle_controller::Controller;
 use chronicle_replication::assignment::{compute_assignments, local_partitions};
 use chronicle_replication::{ClusterConfig, FollowerFetcher, ReplicaManager};
 use chronicle_storage::{PartitionAssignment, StorageError, TopicStore};
@@ -9,11 +10,13 @@ use tonic::{Request, Response, Status};
 
 use crate::proto;
 
+#[allow(dead_code)]
 pub struct ChronicleService {
     store: Arc<TopicStore>,
     replica_manager: Arc<ReplicaManager>,
     cluster: ClusterConfig,
     round_robin: AtomicU32,
+    controller: Option<Arc<Controller>>,
 }
 
 impl ChronicleService {
@@ -21,12 +24,14 @@ impl ChronicleService {
         store: Arc<TopicStore>,
         replica_manager: Arc<ReplicaManager>,
         cluster: ClusterConfig,
+        controller: Option<Arc<Controller>>,
     ) -> Self {
         Self {
             store,
             replica_manager,
             cluster,
             round_robin: AtomicU32::new(0),
+            controller,
         }
     }
 }
