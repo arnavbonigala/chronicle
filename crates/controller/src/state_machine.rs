@@ -193,6 +193,13 @@ impl StateMachineStore {
                     .ok();
                 MetadataResponse::Ok
             }
+            MetadataRequest::JoinGroup { .. }
+            | MetadataRequest::LeaveGroup { .. }
+            | MetadataRequest::ConsumerHeartbeat { .. }
+            | MetadataRequest::CommitOffset { .. }
+            | MetadataRequest::RemoveExpiredMember { .. } => {
+                MetadataResponse::Error("consumer group operations not yet implemented".into())
+            }
         }
     }
 }

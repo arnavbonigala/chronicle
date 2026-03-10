@@ -48,6 +48,28 @@ pub enum MetadataRequest {
     MarkBrokerDead {
         broker_id: u32,
     },
+    JoinGroup {
+        group_id: String,
+        member_id: String,
+        topics: Vec<String>,
+        session_timeout_ms: u64,
+    },
+    LeaveGroup {
+        group_id: String,
+        member_id: String,
+    },
+    ConsumerHeartbeat {
+        group_id: String,
+        member_id: String,
+    },
+    CommitOffset {
+        group_id: String,
+        offsets: Vec<(String, u32, u64)>,
+    },
+    RemoveExpiredMember {
+        group_id: String,
+        member_id: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -57,12 +79,50 @@ pub enum MetadataResponse {
     TopicCreated {
         assignments: Vec<PartitionAssignmentMeta>,
     },
+    GroupJoined {
+        generation_id: u64,
+        member_id: String,
+        assignments: Vec<(String, u32)>,
+    },
+    GroupState {
+        generation_id: u64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ClusterState {
     pub brokers: HashMap<u32, BrokerRegistration>,
     pub topics: HashMap<String, TopicMetadata>,
+    pub consumer_groups: HashMap<String, ConsumerGroupState>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ConsumerGroupState {
+    pub group_id: String,
+    pub generation_id: u64,
+    pub members: HashMap<String, GroupMember>,
+    pub assignments: HashMap<String, Vec<TopicPartitionKey>>,
+    pub offsets: HashMap<TopicPartitionKey, CommittedOffset>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GroupMember {
+    pub member_id: String,
+    pub subscriptions: Vec<String>,
+    pub session_timeout_ms: u64,
+    pub last_heartbeat_ms: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]
+pub struct TopicPartitionKey {
+    pub topic: String,
+    pub partition: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CommittedOffset {
+    pub offset: u64,
+    pub timestamp_ms: u64,
 }
 
 impl ClusterState {

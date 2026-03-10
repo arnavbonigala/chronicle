@@ -325,6 +325,12 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                         message: msg,
                     }),
                 })),
+                Ok(_) => Ok(Response::new(proto::CreateTopicResponse {
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InternalError.into(),
+                        message: "unexpected response".into(),
+                    }),
+                })),
                 Err(e) => Ok(Response::new(proto::CreateTopicResponse {
                     error: Some(proto::Error {
                         code: proto::ErrorCode::InternalError.into(),
