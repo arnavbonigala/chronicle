@@ -9,6 +9,13 @@ service Chronicle {
   rpc GetMetadata(GetMetadataRequest) returns (GetMetadataResponse);
   rpc ReplicateFetch(ReplicateFetchRequest) returns (ReplicateFetchResponse);
   rpc CreateReplica(CreateReplicaRequest) returns (CreateReplicaResponse);
+  rpc JoinGroup(JoinGroupRequest) returns (JoinGroupResponse);
+  rpc LeaveGroup(LeaveGroupRequest) returns (LeaveGroupResponse);
+  rpc ConsumerHeartbeat(ConsumerHeartbeatRequest) returns (ConsumerHeartbeatResponse);
+  rpc CommitOffset(CommitOffsetRequest) returns (CommitOffsetResponse);
+  rpc FetchOffsets(FetchOffsetsRequest) returns (FetchOffsetsResponse);
+  rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
+  rpc DescribeGroup(DescribeGroupRequest) returns (DescribeGroupResponse);
 }
 
 service ControllerService {
@@ -193,4 +200,96 @@ enum ErrorCode {
   TOPIC_ALREADY_EXISTS = 5;
   INVALID_REQUEST = 6;
   NOT_LEADER_FOR_PARTITION = 7;
+  CONSUMER_GROUP_NOT_FOUND = 8;
+  MEMBER_NOT_FOUND = 9;
+  GENERATION_MISMATCH = 10;
+}
+
+message TopicPartition {
+  string topic = 1;
+  uint32 partition = 2;
+}
+
+message TopicPartitionOffset {
+  string topic = 1;
+  uint32 partition = 2;
+  uint64 offset = 3;
+}
+
+message JoinGroupRequest {
+  string group_id = 1;
+  string member_id = 2;
+  repeated string topics = 3;
+  uint32 session_timeout_ms = 4;
+}
+
+message JoinGroupResponse {
+  uint64 generation_id = 1;
+  string member_id = 2;
+  repeated TopicPartition assignments = 3;
+  Error error = 4;
+}
+
+message LeaveGroupRequest {
+  string group_id = 1;
+  string member_id = 2;
+}
+
+message LeaveGroupResponse {
+  Error error = 1;
+}
+
+message ConsumerHeartbeatRequest {
+  string group_id = 1;
+  string member_id = 2;
+  uint64 generation_id = 3;
+}
+
+message ConsumerHeartbeatResponse {
+  bool rebalance_required = 1;
+  Error error = 2;
+}
+
+message CommitOffsetRequest {
+  string group_id = 1;
+  repeated TopicPartitionOffset offsets = 2;
+}
+
+message CommitOffsetResponse {
+  Error error = 1;
+}
+
+message FetchOffsetsRequest {
+  string group_id = 1;
+  repeated TopicPartition partitions = 2;
+}
+
+message FetchOffsetsResponse {
+  repeated TopicPartitionOffset offsets = 1;
+  Error error = 2;
+}
+
+message ListGroupsRequest {}
+
+message ListGroupsResponse {
+  repeated string group_ids = 1;
+  Error error = 2;
+}
+
+message DescribeGroupRequest {
+  string group_id = 1;
+}
+
+message DescribeGroupResponse {
+  string group_id = 1;
+  uint64 generation_id = 2;
+  repeated GroupMemberInfo members = 3;
+  repeated TopicPartitionOffset committed_offsets = 4;
+  Error error = 5;
+}
+
+message GroupMemberInfo {
+  string member_id = 1;
+  repeated string subscriptions = 2;
+  repeated TopicPartition assignments = 3;
 }

@@ -716,6 +716,55 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
 
         Ok(Response::new(proto::CreateReplicaResponse { error: None }))
     }
+
+    async fn join_group(
+        &self,
+        _request: Request<proto::JoinGroupRequest>,
+    ) -> Result<Response<proto::JoinGroupResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
+
+    async fn leave_group(
+        &self,
+        _request: Request<proto::LeaveGroupRequest>,
+    ) -> Result<Response<proto::LeaveGroupResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
+
+    async fn consumer_heartbeat(
+        &self,
+        _request: Request<proto::ConsumerHeartbeatRequest>,
+    ) -> Result<Response<proto::ConsumerHeartbeatResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
+
+    async fn commit_offset(
+        &self,
+        _request: Request<proto::CommitOffsetRequest>,
+    ) -> Result<Response<proto::CommitOffsetResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
+
+    async fn fetch_offsets(
+        &self,
+        _request: Request<proto::FetchOffsetsRequest>,
+    ) -> Result<Response<proto::FetchOffsetsResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
+
+    async fn list_groups(
+        &self,
+        _request: Request<proto::ListGroupsRequest>,
+    ) -> Result<Response<proto::ListGroupsResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
+
+    async fn describe_group(
+        &self,
+        _request: Request<proto::DescribeGroupRequest>,
+    ) -> Result<Response<proto::DescribeGroupResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
 }
 
 impl ChronicleService {
