@@ -86,6 +86,48 @@ impl Controller {
         }
     }
 
+    /// Checks all consumer group members' heartbeats. For any member whose
+    /// last heartbeat exceeds its session timeout, proposes RemoveExpiredMember.
+    /// Should only be called on the Raft leader.
+    pub async fn check_consumer_heartbeats(&self, default_timeout_ms: u64) {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let state = self.sm.cluster_state().await;
+
+        for group in state.consumer_groups.values() {
+            for member in group.members.values() {
+                let timeout = if member.session_timeout_ms > 0 {
+                    member.session_timeout_ms
+                } else {
+                    default_timeout_ms
+                };
+                if now_ms.saturating_sub(member.last_heartbeat_ms) > timeout {
+                    warn!(
+                        group_id = %group.group_id,
+                        member_id = %member.member_id,
+                        "consumer session expired, removing member"
+                    );
+                    if let Err(e) = self
+                        .propose(MetadataRequest::RemoveExpiredMember {
+                            group_id: group.group_id.clone(),
+                            member_id: member.member_id.clone(),
+                        })
+                        .await
+                    {
+                        warn!(
+                            group_id = %group.group_id,
+                            member_id = %member.member_id,
+                            error = %e,
+                            "failed to remove expired member"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// For all partitions where `failed_broker` is the current leader,
     /// select a new leader from the ISR and propose an UpdateLeader.
     async fn failover_broker(&self, failed_broker: u32, state: &ClusterState) {
