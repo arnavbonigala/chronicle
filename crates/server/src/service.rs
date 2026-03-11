@@ -1008,6 +1008,75 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
         }))
     }
 
+    async fn offset_for_timestamp(
+        &self,
+        request: Request<proto::OffsetForTimestampRequest>,
+    ) -> Result<Response<proto::OffsetForTimestampResponse>, Status> {
+        let req = request.into_inner();
+
+        let topic = match self.store.topic(&req.topic) {
+            Some(t) => t,
+            None => {
+                return Ok(Response::new(proto::OffsetForTimestampResponse {
+                    offset: 0,
+                    found: false,
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::UnknownTopic.into(),
+                        message: format!("unknown topic: {}", req.topic),
+                    }),
+                }));
+            }
+        };
+
+        if req.partition >= topic.partition_count() {
+            return Ok(Response::new(proto::OffsetForTimestampResponse {
+                offset: 0,
+                found: false,
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::UnknownPartition.into(),
+                    message: format!(
+                        "partition {} out of range for topic {} (count: {})",
+                        req.partition,
+                        req.topic,
+                        topic.partition_count()
+                    ),
+                }),
+            }));
+        }
+
+        if !self.cluster.is_single_broker()
+            && !self.replica_manager.is_leader(&req.topic, req.partition)
+        {
+            return Ok(Response::new(proto::OffsetForTimestampResponse {
+                offset: 0,
+                found: false,
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::NotLeaderForPartition.into(),
+                    message: format!(
+                        "broker {} is not leader for {}/{}",
+                        self.cluster.broker_id, req.topic, req.partition
+                    ),
+                }),
+            }));
+        }
+
+        let log_lock = topic.partition(req.partition).unwrap();
+        let log = log_lock.read().unwrap();
+
+        match log.find_offset_by_timestamp(req.timestamp_ms) {
+            Some(offset) => Ok(Response::new(proto::OffsetForTimestampResponse {
+                offset,
+                found: true,
+                error: None,
+            })),
+            None => Ok(Response::new(proto::OffsetForTimestampResponse {
+                offset: 0,
+                found: false,
+                error: None,
+            })),
+        }
+    }
+
     async fn describe_group(
         &self,
         request: Request<proto::DescribeGroupRequest>,

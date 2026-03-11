@@ -53,6 +53,8 @@ enum Command {
         max_records: u32,
         #[arg(long, default_value_t = false)]
         follow: bool,
+        #[arg(long)]
+        from_timestamp: Option<u64>,
     },
     CreateTopic {
         #[arg(long, default_value = "http://127.0.0.1:9092")]
@@ -116,6 +118,16 @@ enum Command {
         #[arg(long)]
         group: String,
     },
+    OffsetForTimestamp {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        topic: String,
+        #[arg(long)]
+        partition: u32,
+        #[arg(long)]
+        timestamp: u64,
+    },
 }
 
 fn acks_to_proto(a: &AcksArg) -> i32 {
@@ -161,9 +173,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             offset,
             max_records,
             follow,
+            from_timestamp,
         } => {
             let mut client = connect(&server).await?;
-            let mut current_offset = offset;
+            let mut current_offset = if let Some(ts) = from_timestamp {
+                let resp = client
+                    .offset_for_timestamp(proto::OffsetForTimestampRequest {
+                        topic: topic.clone(),
+                        partition,
+                        timestamp_ms: ts,
+                    })
+                    .await?
+                    .into_inner();
+                check_error(&resp.error, None);
+                if resp.found {
+                    println!("resolved timestamp {} to offset {}", ts, resp.offset);
+                    resp.offset
+                } else {
+                    eprintln!("no records found at or after timestamp {}", ts);
+                    return Ok(());
+                }
+            } else {
+                offset
+            };
 
             loop {
                 let resp = client
@@ -364,6 +396,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for o in &resp.committed_offsets {
                     println!("  {:<20} {:>10} {:>10}", o.topic, o.partition, o.offset);
                 }
+            }
+        }
+        Command::OffsetForTimestamp {
+            server,
+            topic,
+            partition,
+            timestamp,
+        } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .offset_for_timestamp(proto::OffsetForTimestampRequest {
+                    topic,
+                    partition,
+                    timestamp_ms: timestamp,
+                })
+                .await?
+                .into_inner();
+            check_error(&resp.error, None);
+            if resp.found {
+                println!("offset={}", resp.offset);
+            } else {
+                println!("no offset found for timestamp {}", timestamp);
             }
         }
     }

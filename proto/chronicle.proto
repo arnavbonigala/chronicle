@@ -16,6 +16,7 @@ service Chronicle {
   rpc FetchOffsets(FetchOffsetsRequest) returns (FetchOffsetsResponse);
   rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
   rpc DescribeGroup(DescribeGroupRequest) returns (DescribeGroupResponse);
+  rpc OffsetForTimestamp(OffsetForTimestampRequest) returns (OffsetForTimestampResponse);
 }
 
 service ControllerService {
@@ -292,4 +293,16 @@ message GroupMemberInfo {
   string member_id = 1;
   repeated string subscriptions = 2;
   repeated TopicPartition assignments = 3;
+}
+
+message OffsetForTimestampRequest {
+  string topic = 1;
+  uint32 partition = 2;
+  uint64 timestamp_ms = 3;
+}
+
+message OffsetForTimestampResponse {
+  uint64 offset = 1;
+  bool found = 2;
+  Error error = 3;
 }
