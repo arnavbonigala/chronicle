@@ -2,10 +2,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use chronicle_controller::{Controller, MetadataRequest, MetadataResponse};
 use chronicle_replication::assignment::{compute_assignments, local_partitions};
-use chronicle_replication::{ClusterConfig, FollowerFetcher, ReplicaManager};
-use chronicle_storage::{PartitionAssignment, StorageError, TopicStore};
+use chronicle_replication::{ClusterConfig, FollowerFetcher, ReplicaManager, SequenceCheckResult};
+use chronicle_storage::{PartitionAssignment, Record, RecordHeader, StorageError, TopicStore};
 use tonic::{Request, Response, Status};
 
 use crate::proto;
@@ -109,6 +110,52 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             }));
         }
 
+        let producer_id = req.producer_id;
+        let producer_epoch = req.producer_epoch as u16;
+        let sequence = req.first_sequence;
+
+        if producer_id != 0 {
+            match self.replica_manager.check_sequence(
+                &req.topic,
+                pid,
+                producer_id,
+                producer_epoch,
+                sequence,
+            ) {
+                SequenceCheckResult::Accept => {}
+                SequenceCheckResult::Duplicate { existing_offset } => {
+                    return Ok(Response::new(proto::ProduceResponse {
+                        offset: existing_offset,
+                        partition: pid,
+                        error: None,
+                        leader_broker_id: None,
+                    }));
+                }
+                SequenceCheckResult::OutOfOrder => {
+                    return Ok(Response::new(proto::ProduceResponse {
+                        offset: 0,
+                        partition: pid,
+                        error: Some(proto::Error {
+                            code: proto::ErrorCode::OutOfOrderSequence.into(),
+                            message: "out of order sequence number".into(),
+                        }),
+                        leader_broker_id: None,
+                    }));
+                }
+                SequenceCheckResult::FencedEpoch => {
+                    return Ok(Response::new(proto::ProduceResponse {
+                        offset: 0,
+                        partition: pid,
+                        error: Some(proto::Error {
+                            code: proto::ErrorCode::ProducerFenced.into(),
+                            message: "producer epoch has been fenced".into(),
+                        }),
+                        leader_broker_id: None,
+                    }));
+                }
+            }
+        }
+
         let offset = {
             let log_lock = match topic.partition(pid) {
                 Some(l) => l,
@@ -125,7 +172,30 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 }
             };
             let mut log = log_lock.write().unwrap();
-            match log.append(&req.key, &req.value) {
+            let timestamp_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            let record = Record {
+                offset: log.latest_offset(),
+                timestamp_ms,
+                key: Bytes::copy_from_slice(&req.key),
+                value: Bytes::copy_from_slice(&req.value),
+                headers: req
+                    .headers
+                    .iter()
+                    .map(|h| RecordHeader {
+                        key: h.key.clone(),
+                        value: Bytes::copy_from_slice(&h.value),
+                    })
+                    .collect(),
+                producer_id,
+                producer_epoch,
+                sequence_number: sequence,
+                is_transactional: req.is_transactional,
+                is_control: false,
+            };
+            match log.append_record(&record) {
                 Ok(o) => o,
                 Err(e) => {
                     return Ok(Response::new(proto::ProduceResponse {
@@ -137,6 +207,17 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 }
             }
         };
+
+        if producer_id != 0 {
+            self.replica_manager.record_sequence(
+                &req.topic,
+                pid,
+                producer_id,
+                producer_epoch,
+                sequence,
+                offset,
+            );
+        }
 
         let acks = proto::Acks::try_from(req.acks).unwrap_or(proto::Acks::Leader);
         if acks == proto::Acks::All && !self.cluster.is_single_broker() {

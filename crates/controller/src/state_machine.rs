@@ -995,4 +995,84 @@ mod tests {
         assert_eq!(group.assignments["c2"][0].partition, 1);
         assert_eq!(group.assignments["c2"][1].partition, 3);
     }
+
+    #[tokio::test]
+    async fn allocate_producer_id_increments() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+
+        let resp1 = store.apply_command(
+            &mut sm,
+            &MetadataRequest::AllocateProducerId {
+                transactional_id: None,
+            },
+        );
+        match resp1 {
+            MetadataResponse::ProducerIdAllocated {
+                producer_id,
+                producer_epoch,
+            } => {
+                assert_eq!(producer_id, 0);
+                assert_eq!(producer_epoch, 0);
+            }
+            other => panic!("expected ProducerIdAllocated, got {other:?}"),
+        }
+
+        let resp2 = store.apply_command(
+            &mut sm,
+            &MetadataRequest::AllocateProducerId {
+                transactional_id: None,
+            },
+        );
+        match resp2 {
+            MetadataResponse::ProducerIdAllocated {
+                producer_id,
+                producer_epoch,
+            } => {
+                assert_eq!(producer_id, 1);
+                assert_eq!(producer_epoch, 0);
+            }
+            other => panic!("expected ProducerIdAllocated, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn allocate_producer_id_transactional_bumps_epoch() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+
+        let resp1 = store.apply_command(
+            &mut sm,
+            &MetadataRequest::AllocateProducerId {
+                transactional_id: Some("txn-1".into()),
+            },
+        );
+        match resp1 {
+            MetadataResponse::ProducerIdAllocated {
+                producer_id,
+                producer_epoch,
+            } => {
+                assert_eq!(producer_id, 0);
+                assert_eq!(producer_epoch, 0);
+            }
+            other => panic!("expected ProducerIdAllocated, got {other:?}"),
+        }
+
+        let resp2 = store.apply_command(
+            &mut sm,
+            &MetadataRequest::AllocateProducerId {
+                transactional_id: Some("txn-1".into()),
+            },
+        );
+        match resp2 {
+            MetadataResponse::ProducerIdAllocated {
+                producer_id,
+                producer_epoch,
+            } => {
+                assert_eq!(producer_id, 0);
+                assert_eq!(producer_epoch, 1);
+            }
+            other => panic!("expected ProducerIdAllocated, got {other:?}"),
+        }
+    }
 }

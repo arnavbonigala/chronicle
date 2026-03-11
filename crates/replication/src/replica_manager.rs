@@ -11,6 +11,20 @@ struct PartitionKey {
     partition: u32,
 }
 
+struct ProducerSequenceState {
+    producer_epoch: u16,
+    last_sequence: u32,
+    last_offset: u64,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum SequenceCheckResult {
+    Accept,
+    Duplicate { existing_offset: u64 },
+    OutOfOrder,
+    FencedEpoch,
+}
+
 struct LeaderState {
     replicas: Vec<u32>,
     isr: Vec<u32>,
@@ -21,6 +35,7 @@ struct LeaderState {
     #[allow(dead_code)]
     hwm_rx: watch::Receiver<u64>,
     leader_epoch: u64,
+    producer_states: HashMap<u64, ProducerSequenceState>,
 }
 
 struct FollowerState {
@@ -30,7 +45,7 @@ struct FollowerState {
 }
 
 enum PartitionReplicaState {
-    Leader(LeaderState),
+    Leader(Box<LeaderState>),
     Follower(FollowerState),
 }
 
@@ -90,7 +105,7 @@ impl ReplicaManager {
                     followers.iter().map(|&id| (id, now)).collect();
                 state.insert(
                     key,
-                    PartitionReplicaState::Leader(LeaderState {
+                    PartitionReplicaState::Leader(Box::new(LeaderState {
                         replicas: a.replicas.clone(),
                         isr: a.replicas.clone(),
                         follower_leos,
@@ -99,7 +114,8 @@ impl ReplicaManager {
                         hwm_tx,
                         hwm_rx,
                         leader_epoch: 0,
-                    }),
+                        producer_states: HashMap::new(),
+                    })),
                 );
             } else {
                 state.insert(
@@ -307,7 +323,7 @@ impl ReplicaManager {
             followers.iter().map(|&id| (id, now)).collect();
         state.insert(
             key,
-            PartitionReplicaState::Leader(LeaderState {
+            PartitionReplicaState::Leader(Box::new(LeaderState {
                 replicas: replicas.to_vec(),
                 isr: replicas.to_vec(),
                 follower_leos,
@@ -316,7 +332,8 @@ impl ReplicaManager {
                 hwm_tx,
                 hwm_rx,
                 leader_epoch: epoch,
-            }),
+                producer_states: HashMap::new(),
+            })),
         );
     }
 
@@ -358,6 +375,115 @@ impl ReplicaManager {
                 (k.partition, is_leader)
             })
             .collect()
+    }
+
+    pub fn check_sequence(
+        &self,
+        topic: &str,
+        partition: u32,
+        producer_id: u64,
+        producer_epoch: u16,
+        sequence: u32,
+    ) -> SequenceCheckResult {
+        if producer_id == 0 {
+            return SequenceCheckResult::Accept;
+        }
+        let state = self.state.read().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        let leader = match state.get(&key) {
+            Some(PartitionReplicaState::Leader(l)) => l,
+            _ => return SequenceCheckResult::Accept,
+        };
+        match leader.producer_states.get(&producer_id) {
+            None => {
+                if sequence == 0 {
+                    SequenceCheckResult::Accept
+                } else {
+                    SequenceCheckResult::OutOfOrder
+                }
+            }
+            Some(ps) => {
+                if ps.producer_epoch > producer_epoch {
+                    return SequenceCheckResult::FencedEpoch;
+                }
+                if ps.producer_epoch < producer_epoch {
+                    return SequenceCheckResult::Accept;
+                }
+                if sequence == ps.last_sequence.wrapping_add(1) {
+                    SequenceCheckResult::Accept
+                } else if sequence <= ps.last_sequence {
+                    SequenceCheckResult::Duplicate {
+                        existing_offset: ps.last_offset,
+                    }
+                } else {
+                    SequenceCheckResult::OutOfOrder
+                }
+            }
+        }
+    }
+
+    pub fn record_sequence(
+        &self,
+        topic: &str,
+        partition: u32,
+        producer_id: u64,
+        producer_epoch: u16,
+        sequence: u32,
+        offset: u64,
+    ) {
+        if producer_id == 0 {
+            return;
+        }
+        let mut state = self.state.write().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        if let Some(PartitionReplicaState::Leader(l)) = state.get_mut(&key) {
+            l.producer_states.insert(
+                producer_id,
+                ProducerSequenceState {
+                    producer_epoch,
+                    last_sequence: sequence,
+                    last_offset: offset,
+                },
+            );
+        }
+    }
+
+    pub fn rebuild_producer_state(
+        &self,
+        topic: &str,
+        partition: u32,
+        log: &chronicle_storage::Log,
+    ) {
+        let records = log
+            .read(log.earliest_offset(), u32::MAX)
+            .unwrap_or_default();
+        let mut producer_states: HashMap<u64, ProducerSequenceState> = HashMap::new();
+        for r in &records {
+            if r.producer_id != 0 {
+                producer_states.insert(
+                    r.producer_id,
+                    ProducerSequenceState {
+                        producer_epoch: r.producer_epoch,
+                        last_sequence: r.sequence_number,
+                        last_offset: r.offset,
+                    },
+                );
+            }
+        }
+        let mut state = self.state.write().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        if let Some(PartitionReplicaState::Leader(l)) = state.get_mut(&key) {
+            l.producer_states = producer_states;
+        }
     }
 
     fn leader_leo_inner(&self, topic: &str, partition: u32) -> u64 {
@@ -630,5 +756,82 @@ mod tests {
             .expect("timeout waiting for HWM")
             .expect("watch error");
         assert_eq!(*rx.borrow(), 1);
+    }
+
+    #[test]
+    fn check_sequence_accept_first() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        assert_eq!(
+            rm.check_sequence("t", 0, 42, 0, 0),
+            SequenceCheckResult::Accept
+        );
+    }
+
+    #[test]
+    fn check_sequence_accept_next() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        rm.record_sequence("t", 0, 42, 0, 0, 100);
+        assert_eq!(
+            rm.check_sequence("t", 0, 42, 0, 1),
+            SequenceCheckResult::Accept
+        );
+    }
+
+    #[test]
+    fn check_sequence_duplicate() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        rm.record_sequence("t", 0, 42, 0, 5, 100);
+        assert_eq!(
+            rm.check_sequence("t", 0, 42, 0, 5),
+            SequenceCheckResult::Duplicate {
+                existing_offset: 100
+            }
+        );
+    }
+
+    #[test]
+    fn check_sequence_out_of_order() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        rm.record_sequence("t", 0, 42, 0, 0, 100);
+        assert_eq!(
+            rm.check_sequence("t", 0, 42, 0, 5),
+            SequenceCheckResult::OutOfOrder
+        );
+    }
+
+    #[test]
+    fn check_sequence_fenced_epoch() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        rm.record_sequence("t", 0, 42, 3, 0, 100);
+        assert_eq!(
+            rm.check_sequence("t", 0, 42, 1, 1),
+            SequenceCheckResult::FencedEpoch
+        );
+    }
+
+    #[test]
+    fn check_sequence_new_epoch_resets() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        rm.record_sequence("t", 0, 42, 0, 5, 100);
+        assert_eq!(
+            rm.check_sequence("t", 0, 42, 1, 0),
+            SequenceCheckResult::Accept
+        );
+    }
+
+    #[test]
+    fn check_sequence_non_idempotent_always_accepts() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+        assert_eq!(
+            rm.check_sequence("t", 0, 0, 0, 999),
+            SequenceCheckResult::Accept
+        );
     }
 }

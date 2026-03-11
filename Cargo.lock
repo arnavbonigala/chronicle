@@ -357,6 +357,7 @@ name = "chronicle-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "chronicle-controller",
  "chronicle-replication",
  "chronicle-storage",

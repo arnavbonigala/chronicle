@@ -5,4 +5,4 @@ pub mod replica_manager;
 
 pub use config::{BrokerInfo, ClusterConfig};
 pub use follower_fetcher::FollowerFetcher;
-pub use replica_manager::ReplicaManager;
+pub use replica_manager::{ReplicaManager, SequenceCheckResult};

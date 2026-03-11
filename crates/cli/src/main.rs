@@ -39,6 +39,10 @@ enum Command {
         value: String,
         #[arg(long, default_value = "leader")]
         acks: AcksArg,
+        #[arg(long, default_value_t = false)]
+        idempotent: bool,
+        #[arg(long)]
+        producer_id: Option<u64>,
     },
     Consume {
         #[arg(long, default_value = "http://127.0.0.1:9092")]
@@ -150,8 +154,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             key,
             value,
             acks,
+            idempotent,
+            producer_id: pid_arg,
         } => {
             let mut client = connect(&server).await?;
+            let (pid, epoch) = if idempotent {
+                if let Some(existing_pid) = pid_arg {
+                    (existing_pid, 0u32)
+                } else {
+                    let init_resp = client
+                        .init_producer_id(proto::InitProducerIdRequest {
+                            transactional_id: String::new(),
+                        })
+                        .await?
+                        .into_inner();
+                    check_error(&init_resp.error, None);
+                    println!(
+                        "allocated producer_id={} epoch={}",
+                        init_resp.producer_id, init_resp.producer_epoch
+                    );
+                    (init_resp.producer_id, init_resp.producer_epoch)
+                }
+            } else {
+                (0, 0)
+            };
+
             let resp = client
                 .produce(proto::ProduceRequest {
                     topic,
@@ -159,8 +186,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     key: key.into_bytes(),
                     value: value.into_bytes(),
                     acks: acks_to_proto(&acks),
-                    producer_id: 0,
-                    producer_epoch: 0,
+                    producer_id: pid,
+                    producer_epoch: epoch,
                     first_sequence: 0,
                     headers: vec![],
                     is_transactional: false,
