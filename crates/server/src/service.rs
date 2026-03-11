@@ -725,51 +725,354 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
 
     async fn join_group(
         &self,
-        _request: Request<proto::JoinGroupRequest>,
+        request: Request<proto::JoinGroupRequest>,
     ) -> Result<Response<proto::JoinGroupResponse>, Status> {
-        Err(Status::unimplemented("not yet implemented"))
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::JoinGroupResponse {
+                    error: Some(require_cluster_error()),
+                    ..Default::default()
+                }))
+            }
+        };
+        let req = request.into_inner();
+        if req.group_id.is_empty() || req.member_id.is_empty() || req.topics.is_empty() {
+            return Ok(Response::new(proto::JoinGroupResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InvalidRequest.into(),
+                    message: "group_id, member_id, and topics are required".into(),
+                }),
+                ..Default::default()
+            }));
+        }
+        match ctrl
+            .propose(MetadataRequest::JoinGroup {
+                group_id: req.group_id,
+                member_id: req.member_id,
+                topics: req.topics,
+                session_timeout_ms: req.session_timeout_ms as u64,
+            })
+            .await
+        {
+            Ok(MetadataResponse::GroupJoined {
+                generation_id,
+                member_id,
+                assignments,
+            }) => Ok(Response::new(proto::JoinGroupResponse {
+                generation_id,
+                member_id,
+                assignments: assignments
+                    .into_iter()
+                    .map(|(t, p)| proto::TopicPartition {
+                        topic: t,
+                        partition: p,
+                    })
+                    .collect(),
+                error: None,
+            })),
+            Ok(MetadataResponse::Error(msg)) => Ok(Response::new(proto::JoinGroupResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: msg,
+                }),
+                ..Default::default()
+            })),
+            Ok(_) => Ok(Response::new(proto::JoinGroupResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+                ..Default::default()
+            })),
+            Err(e) => Ok(Response::new(proto::JoinGroupResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+                ..Default::default()
+            })),
+        }
     }
 
     async fn leave_group(
         &self,
-        _request: Request<proto::LeaveGroupRequest>,
+        request: Request<proto::LeaveGroupRequest>,
     ) -> Result<Response<proto::LeaveGroupResponse>, Status> {
-        Err(Status::unimplemented("not yet implemented"))
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::LeaveGroupResponse {
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        match ctrl
+            .propose(MetadataRequest::LeaveGroup {
+                group_id: req.group_id,
+                member_id: req.member_id,
+            })
+            .await
+        {
+            Ok(_) => Ok(Response::new(proto::LeaveGroupResponse { error: None })),
+            Err(e) => Ok(Response::new(proto::LeaveGroupResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
     }
 
     async fn consumer_heartbeat(
         &self,
-        _request: Request<proto::ConsumerHeartbeatRequest>,
+        request: Request<proto::ConsumerHeartbeatRequest>,
     ) -> Result<Response<proto::ConsumerHeartbeatResponse>, Status> {
-        Err(Status::unimplemented("not yet implemented"))
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::ConsumerHeartbeatResponse {
+                    rebalance_required: false,
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        match ctrl
+            .propose(MetadataRequest::ConsumerHeartbeat {
+                group_id: req.group_id,
+                member_id: req.member_id,
+            })
+            .await
+        {
+            Ok(MetadataResponse::GroupState { generation_id }) => {
+                Ok(Response::new(proto::ConsumerHeartbeatResponse {
+                    rebalance_required: generation_id != req.generation_id,
+                    error: None,
+                }))
+            }
+            Ok(MetadataResponse::Error(msg)) => {
+                Ok(Response::new(proto::ConsumerHeartbeatResponse {
+                    rebalance_required: false,
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::MemberNotFound.into(),
+                        message: msg,
+                    }),
+                }))
+            }
+            Ok(_) => Ok(Response::new(proto::ConsumerHeartbeatResponse {
+                rebalance_required: false,
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+            })),
+            Err(e) => Ok(Response::new(proto::ConsumerHeartbeatResponse {
+                rebalance_required: false,
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
     }
 
     async fn commit_offset(
         &self,
-        _request: Request<proto::CommitOffsetRequest>,
+        request: Request<proto::CommitOffsetRequest>,
     ) -> Result<Response<proto::CommitOffsetResponse>, Status> {
-        Err(Status::unimplemented("not yet implemented"))
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::CommitOffsetResponse {
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        if req.group_id.is_empty() {
+            return Ok(Response::new(proto::CommitOffsetResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InvalidRequest.into(),
+                    message: "group_id is required".into(),
+                }),
+            }));
+        }
+        let offsets: Vec<(String, u32, u64)> = req
+            .offsets
+            .into_iter()
+            .map(|o| (o.topic, o.partition, o.offset))
+            .collect();
+        match ctrl
+            .propose(MetadataRequest::CommitOffset {
+                group_id: req.group_id,
+                offsets,
+            })
+            .await
+        {
+            Ok(MetadataResponse::Error(msg)) => Ok(Response::new(proto::CommitOffsetResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::ConsumerGroupNotFound.into(),
+                    message: msg,
+                }),
+            })),
+            Ok(_) => Ok(Response::new(proto::CommitOffsetResponse { error: None })),
+            Err(e) => Ok(Response::new(proto::CommitOffsetResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
     }
 
     async fn fetch_offsets(
         &self,
-        _request: Request<proto::FetchOffsetsRequest>,
+        request: Request<proto::FetchOffsetsRequest>,
     ) -> Result<Response<proto::FetchOffsetsResponse>, Status> {
-        Err(Status::unimplemented("not yet implemented"))
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::FetchOffsetsResponse {
+                    offsets: vec![],
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        let state = ctrl.cluster_state().await;
+        let group = match state.consumer_groups.get(&req.group_id) {
+            Some(g) => g,
+            None => {
+                return Ok(Response::new(proto::FetchOffsetsResponse {
+                    offsets: vec![],
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::ConsumerGroupNotFound.into(),
+                        message: format!("consumer group not found: {}", req.group_id),
+                    }),
+                }));
+            }
+        };
+        let offsets = if req.partitions.is_empty() {
+            group
+                .offsets
+                .iter()
+                .map(|(k, v)| proto::TopicPartitionOffset {
+                    topic: k.topic.clone(),
+                    partition: k.partition,
+                    offset: v.offset,
+                })
+                .collect()
+        } else {
+            req.partitions
+                .iter()
+                .map(|p| {
+                    let key = chronicle_controller::TopicPartitionKey {
+                        topic: p.topic.clone(),
+                        partition: p.partition,
+                    };
+                    let offset = group.offsets.get(&key).map(|o| o.offset).unwrap_or(0);
+                    proto::TopicPartitionOffset {
+                        topic: p.topic.clone(),
+                        partition: p.partition,
+                        offset,
+                    }
+                })
+                .collect()
+        };
+        Ok(Response::new(proto::FetchOffsetsResponse {
+            offsets,
+            error: None,
+        }))
     }
 
     async fn list_groups(
         &self,
         _request: Request<proto::ListGroupsRequest>,
     ) -> Result<Response<proto::ListGroupsResponse>, Status> {
-        Err(Status::unimplemented("not yet implemented"))
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::ListGroupsResponse {
+                    group_ids: vec![],
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let state = ctrl.cluster_state().await;
+        let group_ids: Vec<String> = state.consumer_groups.keys().cloned().collect();
+        Ok(Response::new(proto::ListGroupsResponse {
+            group_ids,
+            error: None,
+        }))
     }
 
     async fn describe_group(
         &self,
-        _request: Request<proto::DescribeGroupRequest>,
+        request: Request<proto::DescribeGroupRequest>,
     ) -> Result<Response<proto::DescribeGroupResponse>, Status> {
-        Err(Status::unimplemented("not yet implemented"))
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::DescribeGroupResponse {
+                    error: Some(require_cluster_error()),
+                    ..Default::default()
+                }))
+            }
+        };
+        let req = request.into_inner();
+        let state = ctrl.cluster_state().await;
+        let group = match state.consumer_groups.get(&req.group_id) {
+            Some(g) => g,
+            None => {
+                return Ok(Response::new(proto::DescribeGroupResponse {
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::ConsumerGroupNotFound.into(),
+                        message: format!("consumer group not found: {}", req.group_id),
+                    }),
+                    ..Default::default()
+                }));
+            }
+        };
+        let members: Vec<proto::GroupMemberInfo> = group
+            .members
+            .values()
+            .map(|m| {
+                let member_assignments = group
+                    .assignments
+                    .get(&m.member_id)
+                    .cloned()
+                    .unwrap_or_default();
+                proto::GroupMemberInfo {
+                    member_id: m.member_id.clone(),
+                    subscriptions: m.subscriptions.clone(),
+                    assignments: member_assignments
+                        .into_iter()
+                        .map(|tp| proto::TopicPartition {
+                            topic: tp.topic,
+                            partition: tp.partition,
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        let committed_offsets: Vec<proto::TopicPartitionOffset> = group
+            .offsets
+            .iter()
+            .map(|(k, v)| proto::TopicPartitionOffset {
+                topic: k.topic.clone(),
+                partition: k.partition,
+                offset: v.offset,
+            })
+            .collect();
+        Ok(Response::new(proto::DescribeGroupResponse {
+            group_id: group.group_id.clone(),
+            generation_id: group.generation_id,
+            members,
+            committed_offsets,
+            error: None,
+        }))
     }
 }
 
@@ -800,6 +1103,13 @@ impl ChronicleService {
                 .spawn();
             }
         }
+    }
+}
+
+fn require_cluster_error() -> proto::Error {
+    proto::Error {
+        code: proto::ErrorCode::InternalError.into(),
+        message: "consumer groups require cluster mode".into(),
     }
 }
 

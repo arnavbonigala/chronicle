@@ -12,6 +12,8 @@ pub use grpc_service::{ControllerGrpcService, ControllerServiceServer};
 pub use log_store::LogStore;
 pub use network::ControllerNetwork;
 pub use state_machine::StateMachineStore;
-pub use types::{ClusterState, MetadataChange, MetadataRequest, MetadataResponse, TypeConfig};
+pub use types::{
+    ClusterState, MetadataChange, MetadataRequest, MetadataResponse, TopicPartitionKey, TypeConfig,
+};
 
 pub use openraft::{BasicNode, Config as RaftConfig, Raft};
