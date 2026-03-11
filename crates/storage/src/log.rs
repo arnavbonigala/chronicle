@@ -119,6 +119,36 @@ impl Log {
         self.segments.last().map_or(0, |s| s.next_offset())
     }
 
+    /// Find the first offset with timestamp >= the given timestamp.
+    /// Returns `None` if no records exist at or after the timestamp.
+    pub fn find_offset_by_timestamp(&self, timestamp_ms: u64) -> Option<u64> {
+        if self.segments.is_empty() {
+            return None;
+        }
+        // Find the right segment: the last segment whose first timestamp <= target.
+        // We iterate forward and find the first segment whose first timestamp > target,
+        // then use the one before it.
+        let mut seg_idx = 0;
+        for (i, seg) in self.segments.iter().enumerate() {
+            match seg.first_timestamp() {
+                Some(ts) if ts <= timestamp_ms => seg_idx = i,
+                Some(_) => break,
+                None => continue,
+            }
+        }
+        // Try to find within the selected segment
+        if let Some(offset) = self.segments[seg_idx].find_offset_by_timestamp(timestamp_ms) {
+            return Some(offset);
+        }
+        // If not found in the selected segment, try subsequent segments
+        for seg in &self.segments[seg_idx + 1..] {
+            if let Some(offset) = seg.find_offset_by_timestamp(timestamp_ms) {
+                return Some(offset);
+            }
+        }
+        None
+    }
+
     fn find_segment(&self, offset: u64) -> usize {
         match self
             .segments

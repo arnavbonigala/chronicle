@@ -8,6 +8,7 @@ use bytes::Bytes;
 use crate::error::{Result, StorageError};
 use crate::index::Index;
 use crate::record::Record;
+use crate::time_index::TimeIndex;
 
 const FILENAME_WIDTH: usize = 20;
 
@@ -16,6 +17,7 @@ pub struct Segment {
     base_offset: u64,
     log_file: File,
     index: Index,
+    time_index: TimeIndex,
     size: u64,
     next_offset: u64,
 }
@@ -23,7 +25,7 @@ pub struct Segment {
 impl Segment {
     pub fn create(dir: &Path, base_offset: u64) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
-        let (log_path, index_path) = segment_paths(dir, base_offset);
+        let (log_path, index_path, timeindex_path) = segment_paths(dir, base_offset);
         let log_file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -31,18 +33,20 @@ impl Segment {
             .read(true)
             .open(&log_path)?;
         let index = Index::create(&index_path)?;
+        let time_index = TimeIndex::create(&timeindex_path)?;
         Ok(Self {
             dir: dir.to_path_buf(),
             base_offset,
             log_file,
             index,
+            time_index,
             size: 0,
             next_offset: base_offset,
         })
     }
 
     pub fn open(dir: &Path, base_offset: u64) -> Result<Self> {
-        let (log_path, index_path) = segment_paths(dir, base_offset);
+        let (log_path, index_path, timeindex_path) = segment_paths(dir, base_offset);
         let log_file = OpenOptions::new().read(true).write(true).open(&log_path)?;
         let size = log_file.metadata()?.len();
 
@@ -52,6 +56,12 @@ impl Segment {
             Index::rebuild(&index_path, &log_path, base_offset)?
         };
 
+        let time_index = if timeindex_path.exists() {
+            TimeIndex::load(&timeindex_path)?
+        } else {
+            TimeIndex::rebuild(&timeindex_path, &log_path, base_offset)?
+        };
+
         let next_offset = base_offset + index.entry_count() as u64;
 
         Ok(Self {
@@ -59,6 +69,7 @@ impl Segment {
             base_offset,
             log_file,
             index,
+            time_index,
             size,
             next_offset,
         })
@@ -84,6 +95,7 @@ impl Segment {
 
         let relative_offset = (offset - self.base_offset) as u32;
         self.index.append(relative_offset, position)?;
+        self.time_index.append(timestamp_ms, relative_offset)?;
 
         self.size += record.encoded_size() as u64;
         self.next_offset = offset + 1;
@@ -116,6 +128,7 @@ impl Segment {
 
         let relative_offset = (offset - self.base_offset) as u32;
         self.index.append(relative_offset, position)?;
+        self.time_index.append(timestamp_ms, relative_offset)?;
 
         self.size += record.encoded_size() as u64;
         self.next_offset = offset + 1;
@@ -173,7 +186,7 @@ impl Segment {
 
     /// Validate all records in the segment, truncate at first corruption, rebuild index.
     pub fn recover(&mut self) -> Result<()> {
-        let (log_path, index_path) = segment_paths(&self.dir, self.base_offset);
+        let (log_path, index_path, timeindex_path) = segment_paths(&self.dir, self.base_offset);
         let mut reader = BufReader::new(File::open(&log_path)?);
         let mut valid_size: u64 = 0;
         let mut count: u64 = 0;
@@ -201,12 +214,14 @@ impl Segment {
         self.size = valid_size;
         self.next_offset = self.base_offset + count;
         self.index = Index::rebuild(&index_path, &log_path, self.base_offset)?;
+        self.time_index = TimeIndex::rebuild(&timeindex_path, &log_path, self.base_offset)?;
         Ok(())
     }
 
     pub fn flush(&self) -> Result<()> {
         self.log_file.sync_all()?;
         self.index.flush()?;
+        self.time_index.flush()?;
         Ok(())
     }
 
@@ -221,13 +236,27 @@ impl Segment {
     pub fn size(&self) -> u64 {
         self.size
     }
+
+    /// Return the first offset in this segment with timestamp >= the given timestamp,
+    /// or `None` if no such record exists.
+    pub fn find_offset_by_timestamp(&self, timestamp_ms: u64) -> Option<u64> {
+        self.time_index
+            .lookup(timestamp_ms)
+            .map(|rel| self.base_offset + rel as u64)
+    }
+
+    /// Return the timestamp of the first record in this segment, if any.
+    pub fn first_timestamp(&self) -> Option<u64> {
+        self.time_index.first_timestamp()
+    }
 }
 
-pub fn segment_paths(dir: &Path, base_offset: u64) -> (PathBuf, PathBuf) {
+pub fn segment_paths(dir: &Path, base_offset: u64) -> (PathBuf, PathBuf, PathBuf) {
     let name = format!("{:0>width$}", base_offset, width = FILENAME_WIDTH);
     (
         dir.join(format!("{}.log", name)),
         dir.join(format!("{}.index", name)),
+        dir.join(format!("{}.timeindex", name)),
     )
 }
 

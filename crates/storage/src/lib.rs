@@ -4,6 +4,7 @@ pub mod index;
 pub mod log;
 pub mod record;
 pub mod segment;
+mod time_index;
 pub mod topic;
 
 pub use config::StorageConfig;
