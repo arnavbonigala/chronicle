@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
 use clap::{Parser, Subcommand, ValueEnum};
 use tonic::transport::Channel;
 
@@ -70,6 +73,48 @@ enum Command {
     ListTopics {
         #[arg(long, default_value = "http://127.0.0.1:9092")]
         server: String,
+    },
+    ConsumeGroup {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        group: String,
+        #[arg(long, value_delimiter = ',')]
+        topics: Vec<String>,
+        #[arg(long)]
+        member_id: Option<String>,
+        #[arg(long, default_value_t = 10000)]
+        session_timeout_ms: u32,
+        #[arg(long, default_value_t = 5000)]
+        auto_commit_interval_ms: u64,
+    },
+    CommitOffset {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        group: String,
+        #[arg(long)]
+        topic: String,
+        #[arg(long)]
+        partition: u32,
+        #[arg(long)]
+        offset: u64,
+    },
+    FetchOffsets {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        group: String,
+    },
+    ListGroups {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+    },
+    DescribeGroup {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        group: String,
     },
 }
 
@@ -214,9 +259,298 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        Command::ConsumeGroup {
+            server,
+            group,
+            topics,
+            member_id,
+            session_timeout_ms,
+            auto_commit_interval_ms,
+        } => {
+            run_consume_group(
+                &server,
+                &group,
+                &topics,
+                member_id,
+                session_timeout_ms,
+                auto_commit_interval_ms,
+            )
+            .await?;
+        }
+        Command::CommitOffset {
+            server,
+            group,
+            topic,
+            partition,
+            offset,
+        } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .commit_offset(proto::CommitOffsetRequest {
+                    group_id: group,
+                    offsets: vec![proto::TopicPartitionOffset {
+                        topic,
+                        partition,
+                        offset,
+                    }],
+                })
+                .await?
+                .into_inner();
+            check_error(&resp.error, None);
+            println!("offset committed");
+        }
+        Command::FetchOffsets { server, group } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .fetch_offsets(proto::FetchOffsetsRequest {
+                    group_id: group,
+                    partitions: vec![],
+                })
+                .await?
+                .into_inner();
+            check_error(&resp.error, None);
+            if resp.offsets.is_empty() {
+                println!("no committed offsets");
+            } else {
+                println!("{:<20} {:>10} {:>10}", "TOPIC", "PARTITION", "OFFSET");
+                for o in &resp.offsets {
+                    println!("{:<20} {:>10} {:>10}", o.topic, o.partition, o.offset);
+                }
+            }
+        }
+        Command::ListGroups { server } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .list_groups(proto::ListGroupsRequest {})
+                .await?
+                .into_inner();
+            check_error(&resp.error, None);
+            if resp.group_ids.is_empty() {
+                println!("no consumer groups");
+            } else {
+                for gid in &resp.group_ids {
+                    println!("{gid}");
+                }
+            }
+        }
+        Command::DescribeGroup { server, group } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .describe_group(proto::DescribeGroupRequest { group_id: group })
+                .await?
+                .into_inner();
+            check_error(&resp.error, None);
+            println!("group={} generation={}", resp.group_id, resp.generation_id);
+            if !resp.members.is_empty() {
+                println!("\nMembers:");
+                for m in &resp.members {
+                    let subs = m.subscriptions.join(",");
+                    let assigns: Vec<String> = m
+                        .assignments
+                        .iter()
+                        .map(|a| format!("{}/{}", a.topic, a.partition))
+                        .collect();
+                    println!(
+                        "  member={} subscriptions=[{}] assignments=[{}]",
+                        m.member_id,
+                        subs,
+                        assigns.join(", ")
+                    );
+                }
+            }
+            if !resp.committed_offsets.is_empty() {
+                println!("\nCommitted offsets:");
+                println!("  {:<20} {:>10} {:>10}", "TOPIC", "PARTITION", "OFFSET");
+                for o in &resp.committed_offsets {
+                    println!("  {:<20} {:>10} {:>10}", o.topic, o.partition, o.offset);
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+async fn run_consume_group(
+    server: &str,
+    group: &str,
+    topics: &[String],
+    member_id_arg: Option<String>,
+    session_timeout_ms: u32,
+    auto_commit_interval_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let member_id = member_id_arg.unwrap_or_else(|| {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        format!("consumer-{}-{}", std::process::id(), ts)
+    });
+    let mut client = connect(server).await?;
+    let heartbeat_interval = Duration::from_millis(session_timeout_ms as u64 / 3);
+    let commit_interval = Duration::from_millis(auto_commit_interval_ms);
+
+    println!("member_id={member_id}");
+
+    loop {
+        let join_resp = client
+            .join_group(proto::JoinGroupRequest {
+                group_id: group.to_string(),
+                member_id: member_id.clone(),
+                topics: topics.to_vec(),
+                session_timeout_ms,
+            })
+            .await?
+            .into_inner();
+        check_error(&join_resp.error, None);
+
+        let generation_id = join_resp.generation_id;
+        let assignments = join_resp.assignments;
+        println!(
+            "joined group={group} generation={generation_id} assigned={} partition(s)",
+            assignments.len()
+        );
+        for a in &assignments {
+            println!("  {}/{}", a.topic, a.partition);
+        }
+
+        if assignments.is_empty() {
+            println!("no partitions assigned, waiting...");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        }
+
+        let fetch_offsets_resp = client
+            .fetch_offsets(proto::FetchOffsetsRequest {
+                group_id: group.to_string(),
+                partitions: assignments.clone(),
+            })
+            .await?
+            .into_inner();
+
+        let mut offsets: HashMap<(String, u32), u64> = HashMap::new();
+        for o in &fetch_offsets_resp.offsets {
+            offsets.insert((o.topic.clone(), o.partition), o.offset);
+        }
+        for a in &assignments {
+            offsets.entry((a.topic.clone(), a.partition)).or_insert(0);
+        }
+
+        let mut last_heartbeat = Instant::now();
+        let mut last_commit = Instant::now();
+        let mut rebalance = false;
+
+        while !rebalance {
+            let mut any_records = false;
+
+            for a in &assignments {
+                let key = (a.topic.clone(), a.partition);
+                let current_offset = *offsets.get(&key).unwrap_or(&0);
+
+                let fetch_resp = client
+                    .fetch(proto::FetchRequest {
+                        topic: a.topic.clone(),
+                        partition: a.partition,
+                        offset: current_offset,
+                        max_records: 100,
+                    })
+                    .await?
+                    .into_inner();
+
+                if let Some(ref err) = fetch_resp.error {
+                    if err.code == proto::ErrorCode::NotLeaderForPartition as i32 {
+                        eprintln!(
+                            "not leader for {}/{}, triggering rejoin",
+                            a.topic, a.partition
+                        );
+                        rebalance = true;
+                        break;
+                    }
+                }
+
+                for record in &fetch_resp.records {
+                    let key_str = String::from_utf8_lossy(&record.key);
+                    let value_str = String::from_utf8_lossy(&record.value);
+                    println!(
+                        "[{}/{}] offset={} timestamp={} key={} value={}",
+                        a.topic,
+                        a.partition,
+                        record.offset,
+                        record.timestamp_ms,
+                        key_str,
+                        value_str
+                    );
+                    offsets.insert((a.topic.clone(), a.partition), record.offset + 1);
+                    any_records = true;
+                }
+            }
+
+            if last_heartbeat.elapsed() >= heartbeat_interval {
+                let hb_resp = client
+                    .consumer_heartbeat(proto::ConsumerHeartbeatRequest {
+                        group_id: group.to_string(),
+                        member_id: member_id.clone(),
+                        generation_id,
+                    })
+                    .await?
+                    .into_inner();
+                if let Some(ref err) = hb_resp.error {
+                    if err.code != proto::ErrorCode::None as i32 {
+                        eprintln!("heartbeat error: {}, rejoining", err.message);
+                        rebalance = true;
+                        continue;
+                    }
+                }
+                if hb_resp.rebalance_required {
+                    println!("rebalance required, rejoining group");
+                    rebalance = true;
+                    continue;
+                }
+                last_heartbeat = Instant::now();
+            }
+
+            if last_commit.elapsed() >= commit_interval {
+                let commit_offsets: Vec<proto::TopicPartitionOffset> = offsets
+                    .iter()
+                    .map(|((t, p), o)| proto::TopicPartitionOffset {
+                        topic: t.clone(),
+                        partition: *p,
+                        offset: *o,
+                    })
+                    .collect();
+                if !commit_offsets.is_empty() {
+                    let _ = client
+                        .commit_offset(proto::CommitOffsetRequest {
+                            group_id: group.to_string(),
+                            offsets: commit_offsets,
+                        })
+                        .await;
+                }
+                last_commit = Instant::now();
+            }
+
+            if !any_records && !rebalance {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+
+        let commit_offsets: Vec<proto::TopicPartitionOffset> = offsets
+            .iter()
+            .map(|((t, p), o)| proto::TopicPartitionOffset {
+                topic: t.clone(),
+                partition: *p,
+                offset: *o,
+            })
+            .collect();
+        if !commit_offsets.is_empty() {
+            let _ = client
+                .commit_offset(proto::CommitOffsetRequest {
+                    group_id: group.to_string(),
+                    offsets: commit_offsets,
+                })
+                .await;
+        }
+    }
 }
 
 fn print_partition_table(t: &proto::TopicInfo) {
