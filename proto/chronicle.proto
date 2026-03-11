@@ -17,6 +17,7 @@ service Chronicle {
   rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
   rpc DescribeGroup(DescribeGroupRequest) returns (DescribeGroupResponse);
   rpc OffsetForTimestamp(OffsetForTimestampRequest) returns (OffsetForTimestampResponse);
+  rpc InitProducerId(InitProducerIdRequest) returns (InitProducerIdResponse);
 }
 
 service ControllerService {
@@ -41,6 +42,11 @@ message ProduceRequest {
   string topic = 3;
   optional uint32 partition = 4;
   Acks acks = 5;
+  uint64 producer_id = 6;
+  uint32 producer_epoch = 7;
+  uint32 first_sequence = 8;
+  repeated RecordHeader headers = 9;
+  bool is_transactional = 10;
 }
 
 message ProduceResponse {
@@ -64,11 +70,22 @@ message FetchResponse {
   optional uint32 leader_broker_id = 4;
 }
 
+message RecordHeader {
+  string key = 1;
+  bytes value = 2;
+}
+
 message Record {
   uint64 offset = 1;
   uint64 timestamp_ms = 2;
   bytes key = 3;
   bytes value = 4;
+  repeated RecordHeader headers = 5;
+  uint64 producer_id = 6;
+  uint32 producer_epoch = 7;
+  uint32 sequence_number = 8;
+  bool is_transactional = 9;
+  bool is_control = 10;
 }
 
 message CreateTopicRequest {
@@ -204,6 +221,10 @@ enum ErrorCode {
   CONSUMER_GROUP_NOT_FOUND = 8;
   MEMBER_NOT_FOUND = 9;
   GENERATION_MISMATCH = 10;
+  DUPLICATE_SEQUENCE = 11;
+  OUT_OF_ORDER_SEQUENCE = 12;
+  INVALID_PRODUCER_EPOCH = 13;
+  PRODUCER_FENCED = 14;
 }
 
 message TopicPartition {
@@ -304,5 +325,15 @@ message OffsetForTimestampRequest {
 message OffsetForTimestampResponse {
   uint64 offset = 1;
   bool found = 2;
+  Error error = 3;
+}
+
+message InitProducerIdRequest {
+  string transactional_id = 1;
+}
+
+message InitProducerIdResponse {
+  uint64 producer_id = 1;
+  uint32 producer_epoch = 2;
   Error error = 3;
 }

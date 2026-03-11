@@ -341,6 +341,7 @@ dependencies = [
 name = "chronicle-replication"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "chronicle-storage",
  "prost",
  "tempfile",

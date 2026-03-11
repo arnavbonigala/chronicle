@@ -159,6 +159,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     key: key.into_bytes(),
                     value: value.into_bytes(),
                     acks: acks_to_proto(&acks),
+                    producer_id: 0,
+                    producer_epoch: 0,
+                    first_sequence: 0,
+                    headers: vec![],
+                    is_transactional: false,
                 })
                 .await?
                 .into_inner();

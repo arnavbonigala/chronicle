@@ -70,6 +70,9 @@ pub enum MetadataRequest {
         group_id: String,
         member_id: String,
     },
+    AllocateProducerId {
+        transactional_id: Option<String>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -87,6 +90,16 @@ pub enum MetadataResponse {
     GroupState {
         generation_id: u64,
     },
+    ProducerIdAllocated {
+        producer_id: u64,
+        producer_epoch: u16,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TransactionalIdMapping {
+    pub producer_id: u64,
+    pub producer_epoch: u16,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -94,6 +107,8 @@ pub struct ClusterState {
     pub brokers: HashMap<u32, BrokerRegistration>,
     pub topics: HashMap<String, TopicMetadata>,
     pub consumer_groups: HashMap<String, ConsumerGroupState>,
+    pub next_producer_id: u64,
+    pub transactional_ids: HashMap<String, TransactionalIdMapping>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

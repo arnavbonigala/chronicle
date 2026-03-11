@@ -263,12 +263,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 let proto_records: Vec<proto::Record> = records
                     .into_iter()
                     .filter(|r| r.offset < hwm)
-                    .map(|r| proto::Record {
-                        offset: r.offset,
-                        timestamp_ms: r.timestamp_ms,
-                        key: r.key.to_vec(),
-                        value: r.value.to_vec(),
-                    })
+                    .map(storage_record_to_proto)
                     .collect();
                 Ok(Response::new(proto::FetchResponse {
                     records: proto_records,
@@ -666,15 +661,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
         let hwm = self
             .replica_manager
             .high_watermark(&req.topic, req.partition);
-        let proto_records = records
-            .into_iter()
-            .map(|r| proto::Record {
-                offset: r.offset,
-                timestamp_ms: r.timestamp_ms,
-                key: r.key.to_vec(),
-                value: r.value.to_vec(),
-            })
-            .collect();
+        let proto_records = records.into_iter().map(storage_record_to_proto).collect();
 
         Ok(Response::new(proto::ReplicateFetchResponse {
             records: proto_records,
@@ -1077,6 +1064,65 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
         }
     }
 
+    async fn init_producer_id(
+        &self,
+        request: Request<proto::InitProducerIdRequest>,
+    ) -> Result<Response<proto::InitProducerIdResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::InitProducerIdResponse {
+                    producer_id: 0,
+                    producer_epoch: 0,
+                    error: Some(require_cluster_error()),
+                }));
+            }
+        };
+        let req = request.into_inner();
+        let transactional_id = if req.transactional_id.is_empty() {
+            None
+        } else {
+            Some(req.transactional_id)
+        };
+        match ctrl
+            .propose(MetadataRequest::AllocateProducerId { transactional_id })
+            .await
+        {
+            Ok(MetadataResponse::ProducerIdAllocated {
+                producer_id,
+                producer_epoch,
+            }) => Ok(Response::new(proto::InitProducerIdResponse {
+                producer_id,
+                producer_epoch: producer_epoch as u32,
+                error: None,
+            })),
+            Ok(MetadataResponse::Error(msg)) => Ok(Response::new(proto::InitProducerIdResponse {
+                producer_id: 0,
+                producer_epoch: 0,
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: msg,
+                }),
+            })),
+            Ok(_) => Ok(Response::new(proto::InitProducerIdResponse {
+                producer_id: 0,
+                producer_epoch: 0,
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+            })),
+            Err(e) => Ok(Response::new(proto::InitProducerIdResponse {
+                producer_id: 0,
+                producer_epoch: 0,
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
+    }
+
     async fn describe_group(
         &self,
         request: Request<proto::DescribeGroupRequest>,
@@ -1187,6 +1233,28 @@ fn route_partition(key: &[u8], partition_count: u32, counter: &AtomicU32) -> u32
         counter.fetch_add(1, Ordering::Relaxed) % partition_count
     } else {
         crc32fast::hash(key) % partition_count
+    }
+}
+
+fn storage_record_to_proto(r: chronicle_storage::Record) -> proto::Record {
+    proto::Record {
+        offset: r.offset,
+        timestamp_ms: r.timestamp_ms,
+        key: r.key.to_vec(),
+        value: r.value.to_vec(),
+        headers: r
+            .headers
+            .into_iter()
+            .map(|h| proto::RecordHeader {
+                key: h.key,
+                value: h.value.to_vec(),
+            })
+            .collect(),
+        producer_id: r.producer_id,
+        producer_epoch: r.producer_epoch as u32,
+        sequence_number: r.sequence_number,
+        is_transactional: r.is_transactional,
+        is_control: r.is_control,
     }
 }
 

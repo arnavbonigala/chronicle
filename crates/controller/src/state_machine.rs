@@ -305,6 +305,40 @@ impl StateMachineStore {
                 }
                 MetadataResponse::Ok
             }
+            MetadataRequest::AllocateProducerId { transactional_id } => match transactional_id {
+                None => {
+                    let id = sm.cluster_state.next_producer_id;
+                    sm.cluster_state.next_producer_id += 1;
+                    MetadataResponse::ProducerIdAllocated {
+                        producer_id: id,
+                        producer_epoch: 0,
+                    }
+                }
+                Some(tid) => {
+                    use crate::types::TransactionalIdMapping;
+                    if let Some(mapping) = sm.cluster_state.transactional_ids.get_mut(tid) {
+                        mapping.producer_epoch += 1;
+                        MetadataResponse::ProducerIdAllocated {
+                            producer_id: mapping.producer_id,
+                            producer_epoch: mapping.producer_epoch,
+                        }
+                    } else {
+                        let id = sm.cluster_state.next_producer_id;
+                        sm.cluster_state.next_producer_id += 1;
+                        sm.cluster_state.transactional_ids.insert(
+                            tid.clone(),
+                            TransactionalIdMapping {
+                                producer_id: id,
+                                producer_epoch: 0,
+                            },
+                        );
+                        MetadataResponse::ProducerIdAllocated {
+                            producer_id: id,
+                            producer_epoch: 0,
+                        }
+                    }
+                }
+            },
         }
     }
 }

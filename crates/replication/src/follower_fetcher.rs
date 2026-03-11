@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chronicle_storage::TopicStore;
+use bytes::Bytes;
+use chronicle_storage::{Record, RecordHeader, TopicStore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -170,7 +171,26 @@ impl FollowerFetcher {
         let mut log = log_lock.write().unwrap();
 
         for r in records {
-            log.append_at(r.offset, &r.key, &r.value)?;
+            let record = Record {
+                offset: r.offset,
+                timestamp_ms: r.timestamp_ms,
+                key: Bytes::copy_from_slice(&r.key),
+                value: Bytes::copy_from_slice(&r.value),
+                headers: r
+                    .headers
+                    .iter()
+                    .map(|h| RecordHeader {
+                        key: h.key.clone(),
+                        value: Bytes::copy_from_slice(&h.value),
+                    })
+                    .collect(),
+                producer_id: r.producer_id,
+                producer_epoch: r.producer_epoch as u16,
+                sequence_number: r.sequence_number,
+                is_transactional: r.is_transactional,
+                is_control: r.is_control,
+            };
+            log.append_record(&record)?;
         }
         Ok(())
     }
