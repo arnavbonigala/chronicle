@@ -236,6 +236,7 @@ async fn run_multi_broker(
             interval.tick().await;
             if checker_controller.is_leader().await {
                 checker_controller.check_heartbeats(15_000).await;
+                checker_controller.check_consumer_heartbeats(10_000).await;
             }
         }
     });
