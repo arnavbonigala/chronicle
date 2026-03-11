@@ -65,6 +65,20 @@ impl Log {
         active.append(key, value)
     }
 
+    /// Append a fully constructed record to the active segment.
+    pub fn append_record(&mut self, record: &Record) -> Result<u64> {
+        let active = self.segments.last().unwrap();
+        if active.size() >= self.config.segment_max_bytes {
+            let new_base = active.next_offset();
+            let new_seg = Segment::create(&self.dir, new_base)?;
+            self.segments.push(new_seg);
+            tracing::info!(new_base_offset = new_base, "rolled to new segment");
+        }
+
+        let active = self.segments.last_mut().unwrap();
+        active.append_record(record)
+    }
+
     pub fn append_at(&mut self, offset: u64, key: &[u8], value: &[u8]) -> Result<u64> {
         let active = self.segments.last().unwrap();
         if active.size() >= self.config.segment_max_bytes {

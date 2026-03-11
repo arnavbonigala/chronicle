@@ -10,5 +10,5 @@ pub mod topic;
 pub use config::StorageConfig;
 pub use error::{Result, StorageError};
 pub use log::Log;
-pub use record::Record;
+pub use record::{Record, RecordHeader};
 pub use topic::{PartitionAssignment, TopicMeta, TopicState, TopicStore};

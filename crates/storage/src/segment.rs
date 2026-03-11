@@ -81,25 +81,13 @@ impl Segment {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-
-        let record = Record {
+        let record = Record::new(
             offset,
             timestamp_ms,
-            key: Bytes::copy_from_slice(key),
-            value: Bytes::copy_from_slice(value),
-        };
-
-        let position = self.size as u32;
-        record.write_to(&mut self.log_file)?;
-        self.log_file.flush()?;
-
-        let relative_offset = (offset - self.base_offset) as u32;
-        self.index.append(relative_offset, position)?;
-        self.time_index.append(timestamp_ms, relative_offset)?;
-
-        self.size += record.encoded_size() as u64;
-        self.next_offset = offset + 1;
-        Ok(offset)
+            Bytes::copy_from_slice(key),
+            Bytes::copy_from_slice(value),
+        );
+        self.write_record(&record)
     }
 
     pub fn append_at(&mut self, offset: u64, key: &[u8], value: &[u8]) -> Result<u64> {
@@ -114,25 +102,40 @@ impl Segment {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-
-        let record = Record {
+        let record = Record::new(
             offset,
             timestamp_ms,
-            key: Bytes::copy_from_slice(key),
-            value: Bytes::copy_from_slice(value),
-        };
+            Bytes::copy_from_slice(key),
+            Bytes::copy_from_slice(value),
+        );
+        self.write_record(&record)
+    }
 
+    /// Append a fully constructed record. The offset must equal `next_offset`.
+    pub fn append_record(&mut self, record: &Record) -> Result<u64> {
+        if record.offset != self.next_offset {
+            return Err(StorageError::OffsetOutOfRange {
+                requested: record.offset,
+                earliest: self.base_offset,
+                latest: self.next_offset,
+            });
+        }
+        self.write_record(record)
+    }
+
+    fn write_record(&mut self, record: &Record) -> Result<u64> {
         let position = self.size as u32;
         record.write_to(&mut self.log_file)?;
         self.log_file.flush()?;
 
-        let relative_offset = (offset - self.base_offset) as u32;
+        let relative_offset = (record.offset - self.base_offset) as u32;
         self.index.append(relative_offset, position)?;
-        self.time_index.append(timestamp_ms, relative_offset)?;
+        self.time_index
+            .append(record.timestamp_ms, relative_offset)?;
 
         self.size += record.encoded_size() as u64;
-        self.next_offset = offset + 1;
-        Ok(offset)
+        self.next_offset = record.offset + 1;
+        Ok(record.offset)
     }
 
     pub fn read_at(&self, offset: u64) -> Result<Record> {
