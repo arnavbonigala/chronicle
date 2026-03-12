@@ -18,7 +18,8 @@ use std::collections::BTreeSet;
 use crate::types::{
     BrokerRegistration, BrokerStatus, ClusterState, CommittedOffset, ConsumerGroupState,
     GroupMember, MetadataChange, MetadataRequest, MetadataResponse, NodeId,
-    PartitionAssignmentMeta, TopicMetadata, TopicPartitionKey, TypeConfig,
+    PartitionAssignmentMeta, TopicMetadata, TopicPartitionKey, TransactionState, TransactionStatus,
+    TxnOffsetCommits, TypeConfig,
 };
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
@@ -339,6 +340,168 @@ impl StateMachineStore {
                     }
                 }
             },
+            MetadataRequest::BeginTransaction { producer_id } => {
+                if sm.cluster_state.transactions.contains_key(producer_id) {
+                    return MetadataResponse::Error(format!(
+                        "transaction already ongoing for producer {producer_id}"
+                    ));
+                }
+                let (txn_id, epoch) = sm
+                    .cluster_state
+                    .transactional_ids
+                    .iter()
+                    .find(|(_, m)| m.producer_id == *producer_id)
+                    .map(|(tid, m)| (tid.clone(), m.producer_epoch))
+                    .unwrap_or_default();
+                sm.cluster_state.transactions.insert(
+                    *producer_id,
+                    TransactionState {
+                        transactional_id: txn_id,
+                        producer_id: *producer_id,
+                        producer_epoch: epoch,
+                        status: TransactionStatus::Ongoing,
+                        partitions: std::collections::HashSet::new(),
+                        offset_commits: None,
+                        start_time_ms: current_time_ms(),
+                    },
+                );
+                MetadataResponse::Ok
+            }
+            MetadataRequest::AddPartitionsToTxn {
+                producer_id,
+                partitions,
+            } => {
+                if let Some(txn) = sm.cluster_state.transactions.get_mut(producer_id) {
+                    if txn.status != TransactionStatus::Ongoing {
+                        return MetadataResponse::Error("transaction not in Ongoing state".into());
+                    }
+                    for (topic, partition) in partitions {
+                        txn.partitions.insert(TopicPartitionKey {
+                            topic: topic.clone(),
+                            partition: *partition,
+                        });
+                    }
+                    MetadataResponse::Ok
+                } else {
+                    MetadataResponse::Error(format!(
+                        "transaction not found for producer {producer_id}"
+                    ))
+                }
+            }
+            MetadataRequest::AddOffsetsToTxn {
+                producer_id,
+                group_id,
+            } => {
+                if let Some(txn) = sm.cluster_state.transactions.get_mut(producer_id) {
+                    if txn.status != TransactionStatus::Ongoing {
+                        return MetadataResponse::Error("transaction not in Ongoing state".into());
+                    }
+                    if txn.offset_commits.is_none() {
+                        txn.offset_commits = Some(TxnOffsetCommits {
+                            group_id: group_id.clone(),
+                            offsets: Vec::new(),
+                        });
+                    }
+                    MetadataResponse::Ok
+                } else {
+                    MetadataResponse::Error(format!(
+                        "transaction not found for producer {producer_id}"
+                    ))
+                }
+            }
+            MetadataRequest::TxnOffsetCommit {
+                producer_id,
+                group_id,
+                offsets,
+            } => {
+                if let Some(txn) = sm.cluster_state.transactions.get_mut(producer_id) {
+                    if txn.status != TransactionStatus::Ongoing {
+                        return MetadataResponse::Error("transaction not in Ongoing state".into());
+                    }
+                    txn.offset_commits = Some(TxnOffsetCommits {
+                        group_id: group_id.clone(),
+                        offsets: offsets.clone(),
+                    });
+                    MetadataResponse::Ok
+                } else {
+                    MetadataResponse::Error(format!(
+                        "transaction not found for producer {producer_id}"
+                    ))
+                }
+            }
+            MetadataRequest::EndTransaction {
+                producer_id,
+                commit,
+            } => {
+                if let Some(txn) = sm.cluster_state.transactions.get_mut(producer_id) {
+                    if txn.status != TransactionStatus::Ongoing {
+                        return MetadataResponse::Error("transaction not in Ongoing state".into());
+                    }
+                    txn.status = if *commit {
+                        TransactionStatus::PrepareCommit
+                    } else {
+                        TransactionStatus::PrepareAbort
+                    };
+                    let partitions: Vec<(String, u32)> = txn
+                        .partitions
+                        .iter()
+                        .map(|tp| (tp.topic.clone(), tp.partition))
+                        .collect();
+                    MetadataResponse::TxnPartitions { partitions }
+                } else {
+                    MetadataResponse::Error(format!(
+                        "transaction not found for producer {producer_id}"
+                    ))
+                }
+            }
+            MetadataRequest::WriteTxnMarkerComplete { producer_id } => {
+                if let Some(txn) = sm.cluster_state.transactions.remove(producer_id) {
+                    let committed = txn.status == TransactionStatus::PrepareCommit;
+                    if committed {
+                        if let Some(oc) = &txn.offset_commits {
+                            let group = sm
+                                .cluster_state
+                                .consumer_groups
+                                .entry(oc.group_id.clone())
+                                .or_insert_with(|| ConsumerGroupState {
+                                    group_id: oc.group_id.clone(),
+                                    ..Default::default()
+                                });
+                            let now = current_time_ms();
+                            for (topic, partition, offset) in &oc.offsets {
+                                group.offsets.insert(
+                                    TopicPartitionKey {
+                                        topic: topic.clone(),
+                                        partition: *partition,
+                                    },
+                                    CommittedOffset {
+                                        offset: *offset,
+                                        timestamp_ms: now,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    let partitions: Vec<(String, u32)> = txn
+                        .partitions
+                        .iter()
+                        .map(|tp| (tp.topic.clone(), tp.partition))
+                        .collect();
+                    self.change_tx
+                        .send(MetadataChange::TransactionCompleted {
+                            producer_id: *producer_id,
+                            producer_epoch: txn.producer_epoch,
+                            committed,
+                            partitions,
+                        })
+                        .ok();
+                    MetadataResponse::Ok
+                } else {
+                    MetadataResponse::Error(format!(
+                        "transaction not found for producer {producer_id}"
+                    ))
+                }
+            }
         }
     }
 }
@@ -1074,5 +1237,251 @@ mod tests {
             }
             other => panic!("expected ProducerIdAllocated, got {other:?}"),
         }
+    }
+
+    fn allocate_producer(store: &StateMachineStore, sm: &mut StateMachineData) -> u64 {
+        match store.apply_command(
+            sm,
+            &MetadataRequest::AllocateProducerId {
+                transactional_id: Some("txn-app".into()),
+            },
+        ) {
+            MetadataResponse::ProducerIdAllocated { producer_id, .. } => producer_id,
+            other => panic!("expected ProducerIdAllocated, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn begin_transaction() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        let pid = allocate_producer(&store, &mut sm);
+
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::BeginTransaction { producer_id: pid },
+        );
+        assert!(matches!(resp, MetadataResponse::Ok));
+        assert!(sm.cluster_state.transactions.contains_key(&pid));
+        assert_eq!(
+            sm.cluster_state.transactions[&pid].status,
+            TransactionStatus::Ongoing
+        );
+    }
+
+    #[tokio::test]
+    async fn begin_transaction_duplicate_errors() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        let pid = allocate_producer(&store, &mut sm);
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::BeginTransaction { producer_id: pid },
+        );
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::BeginTransaction { producer_id: pid },
+        );
+        assert!(matches!(resp, MetadataResponse::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn add_partitions_to_txn() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        let pid = allocate_producer(&store, &mut sm);
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::BeginTransaction { producer_id: pid },
+        );
+
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::AddPartitionsToTxn {
+                producer_id: pid,
+                partitions: vec![("orders".into(), 0), ("orders".into(), 1)],
+            },
+        );
+        assert!(matches!(resp, MetadataResponse::Ok));
+        assert_eq!(sm.cluster_state.transactions[&pid].partitions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn add_partitions_idempotent() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        let pid = allocate_producer(&store, &mut sm);
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::BeginTransaction { producer_id: pid },
+        );
+
+        for _ in 0..3 {
+            store.apply_command(
+                &mut sm,
+                &MetadataRequest::AddPartitionsToTxn {
+                    producer_id: pid,
+                    partitions: vec![("orders".into(), 0)],
+                },
+            );
+        }
+        assert_eq!(sm.cluster_state.transactions[&pid].partitions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn end_transaction_commit_returns_partitions() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        let pid = allocate_producer(&store, &mut sm);
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::BeginTransaction { producer_id: pid },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::AddPartitionsToTxn {
+                producer_id: pid,
+                partitions: vec![("orders".into(), 0)],
+            },
+        );
+
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::EndTransaction {
+                producer_id: pid,
+                commit: true,
+            },
+        );
+
+        match resp {
+            MetadataResponse::TxnPartitions { partitions } => {
+                assert_eq!(partitions.len(), 1);
+                assert_eq!(partitions[0], ("orders".to_string(), 0));
+            }
+            other => panic!("expected TxnPartitions, got {other:?}"),
+        }
+        assert_eq!(
+            sm.cluster_state.transactions[&pid].status,
+            TransactionStatus::PrepareCommit
+        );
+    }
+
+    #[tokio::test]
+    async fn end_transaction_abort() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        let pid = allocate_producer(&store, &mut sm);
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::BeginTransaction { producer_id: pid },
+        );
+
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::EndTransaction {
+                producer_id: pid,
+                commit: false,
+            },
+        );
+        assert!(matches!(resp, MetadataResponse::TxnPartitions { .. }));
+        assert_eq!(
+            sm.cluster_state.transactions[&pid].status,
+            TransactionStatus::PrepareAbort
+        );
+    }
+
+    #[tokio::test]
+    async fn write_txn_marker_complete_commit_applies_offsets() {
+        let (store, mut rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        let pid = allocate_producer(&store, &mut sm);
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::BeginTransaction { producer_id: pid },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::AddPartitionsToTxn {
+                producer_id: pid,
+                partitions: vec![("orders".into(), 0)],
+            },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::AddOffsetsToTxn {
+                producer_id: pid,
+                group_id: "g1".into(),
+            },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::TxnOffsetCommit {
+                producer_id: pid,
+                group_id: "g1".into(),
+                offsets: vec![("orders".into(), 0, 42)],
+            },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::EndTransaction {
+                producer_id: pid,
+                commit: true,
+            },
+        );
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::WriteTxnMarkerComplete { producer_id: pid },
+        );
+        assert!(matches!(resp, MetadataResponse::Ok));
+        assert!(!sm.cluster_state.transactions.contains_key(&pid));
+
+        let group = &sm.cluster_state.consumer_groups["g1"];
+        let key = TopicPartitionKey {
+            topic: "orders".into(),
+            partition: 0,
+        };
+        assert_eq!(group.offsets[&key].offset, 42);
+
+        while let Ok(change) = rx.try_recv() {
+            if matches!(change, MetadataChange::TransactionCompleted { .. }) {
+                return;
+            }
+        }
+        panic!("expected TransactionCompleted change");
+    }
+
+    #[tokio::test]
+    async fn write_txn_marker_complete_abort_discards_offsets() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+        let pid = allocate_producer(&store, &mut sm);
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::BeginTransaction { producer_id: pid },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::TxnOffsetCommit {
+                producer_id: pid,
+                group_id: "g1".into(),
+                offsets: vec![("orders".into(), 0, 42)],
+            },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::EndTransaction {
+                producer_id: pid,
+                commit: false,
+            },
+        );
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::WriteTxnMarkerComplete { producer_id: pid },
+        );
+
+        assert!(!sm.cluster_state.consumer_groups.contains_key("g1"));
     }
 }

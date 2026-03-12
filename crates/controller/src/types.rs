@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 
 use openraft::BasicNode;
@@ -73,6 +73,29 @@ pub enum MetadataRequest {
     AllocateProducerId {
         transactional_id: Option<String>,
     },
+    BeginTransaction {
+        producer_id: u64,
+    },
+    AddPartitionsToTxn {
+        producer_id: u64,
+        partitions: Vec<(String, u32)>,
+    },
+    AddOffsetsToTxn {
+        producer_id: u64,
+        group_id: String,
+    },
+    EndTransaction {
+        producer_id: u64,
+        commit: bool,
+    },
+    WriteTxnMarkerComplete {
+        producer_id: u64,
+    },
+    TxnOffsetCommit {
+        producer_id: u64,
+        group_id: String,
+        offsets: Vec<(String, u32, u64)>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -94,12 +117,41 @@ pub enum MetadataResponse {
         producer_id: u64,
         producer_epoch: u16,
     },
+    TxnPartitions {
+        partitions: Vec<(String, u32)>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TransactionalIdMapping {
     pub producer_id: u64,
     pub producer_epoch: u16,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TransactionState {
+    pub transactional_id: String,
+    pub producer_id: u64,
+    pub producer_epoch: u16,
+    pub status: TransactionStatus,
+    pub partitions: HashSet<TopicPartitionKey>,
+    pub offset_commits: Option<TxnOffsetCommits>,
+    pub start_time_ms: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum TransactionStatus {
+    Ongoing,
+    PrepareCommit,
+    PrepareAbort,
+    CompleteCommit,
+    CompleteAbort,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TxnOffsetCommits {
+    pub group_id: String,
+    pub offsets: Vec<(String, u32, u64)>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -109,6 +161,7 @@ pub struct ClusterState {
     pub consumer_groups: HashMap<String, ConsumerGroupState>,
     pub next_producer_id: u64,
     pub transactional_ids: HashMap<String, TransactionalIdMapping>,
+    pub transactions: HashMap<u64, TransactionState>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -210,5 +263,11 @@ pub enum MetadataChange {
         topic: String,
         partition: u32,
         isr: Vec<u32>,
+    },
+    TransactionCompleted {
+        producer_id: u64,
+        producer_epoch: u16,
+        committed: bool,
+        partitions: Vec<(String, u32)>,
     },
 }
