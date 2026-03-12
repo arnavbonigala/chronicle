@@ -1440,48 +1440,98 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             }
         };
         let req = request.into_inner();
-        match ctrl
+        let partitions = match ctrl
             .propose(MetadataRequest::EndTransaction {
                 producer_id: req.producer_id,
                 commit: req.commit,
             })
             .await
         {
-            Ok(MetadataResponse::TxnPartitions { partitions }) => {
-                let proto_partitions = partitions
-                    .into_iter()
-                    .map(|(t, p)| proto::TopicPartition {
-                        topic: t,
-                        partition: p,
-                    })
-                    .collect();
-                Ok(Response::new(proto::EndTransactionResponse {
-                    partitions: proto_partitions,
-                    error: None,
-                }))
+            Ok(MetadataResponse::TxnPartitions { partitions }) => partitions,
+            Ok(MetadataResponse::Error(msg)) => {
+                return Ok(Response::new(proto::EndTransactionResponse {
+                    partitions: vec![],
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InvalidTxnState.into(),
+                        message: msg,
+                    }),
+                }));
             }
-            Ok(MetadataResponse::Error(msg)) => Ok(Response::new(proto::EndTransactionResponse {
-                partitions: vec![],
-                error: Some(proto::Error {
-                    code: proto::ErrorCode::InvalidTxnState.into(),
-                    message: msg,
-                }),
-            })),
-            Ok(_) => Ok(Response::new(proto::EndTransactionResponse {
-                partitions: vec![],
-                error: Some(proto::Error {
-                    code: proto::ErrorCode::InternalError.into(),
-                    message: "unexpected response".into(),
-                }),
-            })),
-            Err(e) => Ok(Response::new(proto::EndTransactionResponse {
-                partitions: vec![],
-                error: Some(proto::Error {
-                    code: proto::ErrorCode::InternalError.into(),
-                    message: e,
-                }),
-            })),
+            Ok(_) => {
+                return Ok(Response::new(proto::EndTransactionResponse {
+                    partitions: vec![],
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InternalError.into(),
+                        message: "unexpected response".into(),
+                    }),
+                }));
+            }
+            Err(e) => {
+                return Ok(Response::new(proto::EndTransactionResponse {
+                    partitions: vec![],
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InternalError.into(),
+                        message: e,
+                    }),
+                }));
+            }
+        };
+
+        for (topic, partition) in &partitions {
+            if let Some(t) = self.store.topic(topic) {
+                if let Some(log_lock) = t.partition(*partition) {
+                    let mut log = log_lock.write().unwrap();
+                    let timestamp_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64;
+                    let marker_value = if req.commit {
+                        b"COMMIT".to_vec()
+                    } else {
+                        b"ABORT".to_vec()
+                    };
+                    let record = Record {
+                        offset: log.latest_offset(),
+                        timestamp_ms,
+                        key: Bytes::new(),
+                        value: Bytes::from(marker_value),
+                        headers: vec![],
+                        producer_id: req.producer_id,
+                        producer_epoch: req.producer_epoch as u16,
+                        sequence_number: 0,
+                        is_transactional: true,
+                        is_control: true,
+                    };
+                    if let Ok(marker_offset) = log.append_record(&record) {
+                        self.replica_manager.complete_txn(
+                            topic,
+                            *partition,
+                            req.producer_id,
+                            req.commit,
+                            marker_offset,
+                        );
+                    }
+                }
+            }
         }
+
+        let _ = ctrl
+            .propose(MetadataRequest::WriteTxnMarkerComplete {
+                producer_id: req.producer_id,
+            })
+            .await;
+
+        let proto_partitions = partitions
+            .into_iter()
+            .map(|(t, p)| proto::TopicPartition {
+                topic: t,
+                partition: p,
+            })
+            .collect();
+        Ok(Response::new(proto::EndTransactionResponse {
+            partitions: proto_partitions,
+            error: None,
+        }))
     }
 
     async fn write_txn_markers(

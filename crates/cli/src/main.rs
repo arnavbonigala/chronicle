@@ -24,6 +24,12 @@ enum AcksArg {
     All,
 }
 
+#[derive(Clone, ValueEnum)]
+enum IsolationLevelArg {
+    ReadUncommitted,
+    ReadCommitted,
+}
+
 #[derive(Subcommand)]
 enum Command {
     Produce {
@@ -59,6 +65,8 @@ enum Command {
         follow: bool,
         #[arg(long)]
         from_timestamp: Option<u64>,
+        #[arg(long, default_value = "read-uncommitted")]
+        isolation_level: IsolationLevelArg,
     },
     CreateTopic {
         #[arg(long, default_value = "http://127.0.0.1:9092")]
@@ -131,6 +139,22 @@ enum Command {
         partition: u32,
         #[arg(long)]
         timestamp: u64,
+    },
+    TransactionalProduce {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        transactional_id: String,
+        #[arg(long)]
+        topic: String,
+        #[arg(long)]
+        partition: Option<u32>,
+        #[arg(long, default_value = "")]
+        key: String,
+        #[arg(long, value_delimiter = ',')]
+        values: Vec<String>,
+        #[arg(long, default_value_t = true)]
+        commit: bool,
     },
 }
 
@@ -206,7 +230,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_records,
             follow,
             from_timestamp,
+            isolation_level,
         } => {
+            let iso_level = match isolation_level {
+                IsolationLevelArg::ReadUncommitted => proto::IsolationLevel::ReadUncommitted,
+                IsolationLevelArg::ReadCommitted => proto::IsolationLevel::ReadCommitted,
+            };
             let mut client = connect(&server).await?;
             let mut current_offset = if let Some(ts) = from_timestamp {
                 let resp = client
@@ -236,7 +265,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         partition,
                         offset: current_offset,
                         max_records,
-                        isolation_level: proto::IsolationLevel::ReadUncommitted.into(),
+                        isolation_level: iso_level.into(),
                     })
                     .await?
                     .into_inner();
@@ -451,6 +480,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("offset={}", resp.offset);
             } else {
                 println!("no offset found for timestamp {}", timestamp);
+            }
+        }
+        Command::TransactionalProduce {
+            server,
+            transactional_id,
+            topic,
+            partition,
+            key,
+            values,
+            commit,
+        } => {
+            let mut client = connect(&server).await?;
+
+            let init_resp = client
+                .init_producer_id(proto::InitProducerIdRequest {
+                    transactional_id: transactional_id.clone(),
+                })
+                .await?
+                .into_inner();
+            check_error(&init_resp.error, None);
+            let pid = init_resp.producer_id;
+            let epoch = init_resp.producer_epoch;
+            println!("allocated producer_id={pid} epoch={epoch}");
+
+            let begin_resp = client
+                .begin_transaction(proto::BeginTransactionRequest {
+                    producer_id: pid,
+                    producer_epoch: epoch,
+                })
+                .await?
+                .into_inner();
+            check_error(&begin_resp.error, None);
+            println!("transaction started");
+
+            let target_partition = partition.unwrap_or(0);
+            client
+                .add_partitions_to_txn(proto::AddPartitionsToTxnRequest {
+                    producer_id: pid,
+                    producer_epoch: epoch,
+                    partitions: vec![proto::TopicPartition {
+                        topic: topic.clone(),
+                        partition: target_partition,
+                    }],
+                })
+                .await?
+                .into_inner();
+
+            for (seq, val) in values.iter().enumerate() {
+                let resp = client
+                    .produce(proto::ProduceRequest {
+                        topic: topic.clone(),
+                        partition: Some(target_partition),
+                        key: key.clone().into_bytes(),
+                        value: val.clone().into_bytes(),
+                        acks: acks_to_proto(&AcksArg::Leader),
+                        producer_id: pid,
+                        producer_epoch: epoch,
+                        first_sequence: seq as u32,
+                        headers: vec![],
+                        is_transactional: true,
+                    })
+                    .await?
+                    .into_inner();
+                check_error(&resp.error, resp.leader_broker_id);
+                println!(
+                    "produced partition={} offset={} value={}",
+                    resp.partition, resp.offset, val
+                );
+            }
+
+            let end_resp = client
+                .end_transaction(proto::EndTransactionRequest {
+                    producer_id: pid,
+                    producer_epoch: epoch,
+                    commit,
+                })
+                .await?
+                .into_inner();
+            check_error(&end_resp.error, None);
+            if commit {
+                println!("transaction committed");
+            } else {
+                println!("transaction aborted");
             }
         }
     }
