@@ -77,6 +77,13 @@ impl MetadataReactor {
             MetadataChange::BrokerRegistered { id, addr } => {
                 tracing::info!(broker_id = id, addr = %addr, "broker registered");
             }
+            MetadataChange::TransactionCompleted {
+                producer_id,
+                committed,
+                ..
+            } => {
+                tracing::info!(producer_id, committed, "transaction completed");
+            }
         }
     }
 

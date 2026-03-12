@@ -236,6 +236,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         partition,
                         offset: current_offset,
                         max_records,
+                        isolation_level: proto::IsolationLevel::ReadUncommitted.into(),
                     })
                     .await?
                     .into_inner();
@@ -539,6 +540,7 @@ async fn run_consume_group(
                         partition: a.partition,
                         offset: current_offset,
                         max_records: 100,
+                        isolation_level: proto::IsolationLevel::ReadUncommitted.into(),
                     })
                     .await?
                     .into_inner();

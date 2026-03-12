@@ -1204,6 +1204,315 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
         }
     }
 
+    async fn begin_transaction(
+        &self,
+        request: Request<proto::BeginTransactionRequest>,
+    ) -> Result<Response<proto::BeginTransactionResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::BeginTransactionResponse {
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        match ctrl
+            .propose(MetadataRequest::BeginTransaction {
+                producer_id: req.producer_id,
+            })
+            .await
+        {
+            Ok(MetadataResponse::Ok) => Ok(Response::new(proto::BeginTransactionResponse {
+                error: None,
+            })),
+            Ok(MetadataResponse::Error(msg)) => {
+                Ok(Response::new(proto::BeginTransactionResponse {
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InvalidTxnState.into(),
+                        message: msg,
+                    }),
+                }))
+            }
+            Ok(_) => Ok(Response::new(proto::BeginTransactionResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+            })),
+            Err(e) => Ok(Response::new(proto::BeginTransactionResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
+    }
+
+    async fn add_partitions_to_txn(
+        &self,
+        request: Request<proto::AddPartitionsToTxnRequest>,
+    ) -> Result<Response<proto::AddPartitionsToTxnResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::AddPartitionsToTxnResponse {
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        let partitions: Vec<(String, u32)> = req
+            .partitions
+            .into_iter()
+            .map(|tp| (tp.topic, tp.partition))
+            .collect();
+        match ctrl
+            .propose(MetadataRequest::AddPartitionsToTxn {
+                producer_id: req.producer_id,
+                partitions,
+            })
+            .await
+        {
+            Ok(MetadataResponse::Ok) => Ok(Response::new(proto::AddPartitionsToTxnResponse {
+                error: None,
+            })),
+            Ok(MetadataResponse::Error(msg)) => {
+                Ok(Response::new(proto::AddPartitionsToTxnResponse {
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::TransactionNotFound.into(),
+                        message: msg,
+                    }),
+                }))
+            }
+            Ok(_) => Ok(Response::new(proto::AddPartitionsToTxnResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+            })),
+            Err(e) => Ok(Response::new(proto::AddPartitionsToTxnResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
+    }
+
+    async fn add_offsets_to_txn(
+        &self,
+        request: Request<proto::AddOffsetsToTxnRequest>,
+    ) -> Result<Response<proto::AddOffsetsToTxnResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::AddOffsetsToTxnResponse {
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        match ctrl
+            .propose(MetadataRequest::AddOffsetsToTxn {
+                producer_id: req.producer_id,
+                group_id: req.group_id,
+            })
+            .await
+        {
+            Ok(MetadataResponse::Ok) => Ok(Response::new(proto::AddOffsetsToTxnResponse {
+                error: None,
+            })),
+            Ok(MetadataResponse::Error(msg)) => Ok(Response::new(proto::AddOffsetsToTxnResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::TransactionNotFound.into(),
+                    message: msg,
+                }),
+            })),
+            Ok(_) => Ok(Response::new(proto::AddOffsetsToTxnResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+            })),
+            Err(e) => Ok(Response::new(proto::AddOffsetsToTxnResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
+    }
+
+    async fn txn_offset_commit(
+        &self,
+        request: Request<proto::TxnOffsetCommitRequest>,
+    ) -> Result<Response<proto::TxnOffsetCommitResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::TxnOffsetCommitResponse {
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        let offsets: Vec<(String, u32, u64)> = req
+            .offsets
+            .into_iter()
+            .map(|o| (o.topic, o.partition, o.offset))
+            .collect();
+        match ctrl
+            .propose(MetadataRequest::TxnOffsetCommit {
+                producer_id: req.producer_id,
+                group_id: req.group_id,
+                offsets,
+            })
+            .await
+        {
+            Ok(MetadataResponse::Ok) => Ok(Response::new(proto::TxnOffsetCommitResponse {
+                error: None,
+            })),
+            Ok(MetadataResponse::Error(msg)) => Ok(Response::new(proto::TxnOffsetCommitResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::TransactionNotFound.into(),
+                    message: msg,
+                }),
+            })),
+            Ok(_) => Ok(Response::new(proto::TxnOffsetCommitResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+            })),
+            Err(e) => Ok(Response::new(proto::TxnOffsetCommitResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
+    }
+
+    async fn end_transaction(
+        &self,
+        request: Request<proto::EndTransactionRequest>,
+    ) -> Result<Response<proto::EndTransactionResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::EndTransactionResponse {
+                    partitions: vec![],
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        match ctrl
+            .propose(MetadataRequest::EndTransaction {
+                producer_id: req.producer_id,
+                commit: req.commit,
+            })
+            .await
+        {
+            Ok(MetadataResponse::TxnPartitions { partitions }) => {
+                let proto_partitions = partitions
+                    .into_iter()
+                    .map(|(t, p)| proto::TopicPartition {
+                        topic: t,
+                        partition: p,
+                    })
+                    .collect();
+                Ok(Response::new(proto::EndTransactionResponse {
+                    partitions: proto_partitions,
+                    error: None,
+                }))
+            }
+            Ok(MetadataResponse::Error(msg)) => Ok(Response::new(proto::EndTransactionResponse {
+                partitions: vec![],
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InvalidTxnState.into(),
+                    message: msg,
+                }),
+            })),
+            Ok(_) => Ok(Response::new(proto::EndTransactionResponse {
+                partitions: vec![],
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+            })),
+            Err(e) => Ok(Response::new(proto::EndTransactionResponse {
+                partitions: vec![],
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
+    }
+
+    async fn write_txn_markers(
+        &self,
+        request: Request<proto::WriteTxnMarkersRequest>,
+    ) -> Result<Response<proto::WriteTxnMarkersResponse>, Status> {
+        let req = request.into_inner();
+        let commit = req.commit;
+
+        for tp in &req.partitions {
+            let topic = match self.store.topic(&tp.topic) {
+                Some(t) => t,
+                None => continue,
+            };
+            let log_lock = match topic.partition(tp.partition) {
+                Some(l) => l,
+                None => continue,
+            };
+            let mut log = log_lock.write().unwrap();
+            let timestamp_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            let marker_value = if commit {
+                b"COMMIT".to_vec()
+            } else {
+                b"ABORT".to_vec()
+            };
+            let record = Record {
+                offset: log.latest_offset(),
+                timestamp_ms,
+                key: Bytes::new(),
+                value: Bytes::from(marker_value),
+                headers: vec![],
+                producer_id: req.producer_id,
+                producer_epoch: req.producer_epoch as u16,
+                sequence_number: 0,
+                is_transactional: true,
+                is_control: true,
+            };
+            if let Err(e) = log.append_record(&record) {
+                return Ok(Response::new(proto::WriteTxnMarkersResponse {
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InternalError.into(),
+                        message: format!("failed to write txn marker: {e}"),
+                    }),
+                }));
+            }
+        }
+
+        if let Some(ref ctrl) = self.controller {
+            let _ = ctrl
+                .propose(MetadataRequest::WriteTxnMarkerComplete {
+                    producer_id: req.producer_id,
+                })
+                .await;
+        }
+
+        Ok(Response::new(proto::WriteTxnMarkersResponse {
+            error: None,
+        }))
+    }
+
     async fn describe_group(
         &self,
         request: Request<proto::DescribeGroupRequest>,

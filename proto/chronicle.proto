@@ -18,6 +18,12 @@ service Chronicle {
   rpc DescribeGroup(DescribeGroupRequest) returns (DescribeGroupResponse);
   rpc OffsetForTimestamp(OffsetForTimestampRequest) returns (OffsetForTimestampResponse);
   rpc InitProducerId(InitProducerIdRequest) returns (InitProducerIdResponse);
+  rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse);
+  rpc AddPartitionsToTxn(AddPartitionsToTxnRequest) returns (AddPartitionsToTxnResponse);
+  rpc AddOffsetsToTxn(AddOffsetsToTxnRequest) returns (AddOffsetsToTxnResponse);
+  rpc TxnOffsetCommit(TxnOffsetCommitRequest) returns (TxnOffsetCommitResponse);
+  rpc EndTransaction(EndTransactionRequest) returns (EndTransactionResponse);
+  rpc WriteTxnMarkers(WriteTxnMarkersRequest) returns (WriteTxnMarkersResponse);
 }
 
 service ControllerService {
@@ -61,6 +67,7 @@ message FetchRequest {
   uint32 max_records = 2;
   string topic = 3;
   uint32 partition = 4;
+  IsolationLevel isolation_level = 5;
 }
 
 message FetchResponse {
@@ -225,6 +232,14 @@ enum ErrorCode {
   OUT_OF_ORDER_SEQUENCE = 12;
   INVALID_PRODUCER_EPOCH = 13;
   PRODUCER_FENCED = 14;
+  TRANSACTION_NOT_FOUND = 15;
+  INVALID_TXN_STATE = 16;
+  TRANSACTION_COORDINATOR_ERROR = 17;
+}
+
+enum IsolationLevel {
+  READ_UNCOMMITTED = 0;
+  READ_COMMITTED = 1;
 }
 
 message TopicPartition {
@@ -336,4 +351,66 @@ message InitProducerIdResponse {
   uint64 producer_id = 1;
   uint32 producer_epoch = 2;
   Error error = 3;
+}
+
+message BeginTransactionRequest {
+  uint64 producer_id = 1;
+  uint32 producer_epoch = 2;
+}
+
+message BeginTransactionResponse {
+  Error error = 1;
+}
+
+message AddPartitionsToTxnRequest {
+  uint64 producer_id = 1;
+  uint32 producer_epoch = 2;
+  repeated TopicPartition partitions = 3;
+}
+
+message AddPartitionsToTxnResponse {
+  Error error = 1;
+}
+
+message AddOffsetsToTxnRequest {
+  uint64 producer_id = 1;
+  uint32 producer_epoch = 2;
+  string group_id = 3;
+}
+
+message AddOffsetsToTxnResponse {
+  Error error = 1;
+}
+
+message TxnOffsetCommitRequest {
+  uint64 producer_id = 1;
+  uint32 producer_epoch = 2;
+  string group_id = 3;
+  repeated TopicPartitionOffset offsets = 4;
+}
+
+message TxnOffsetCommitResponse {
+  Error error = 1;
+}
+
+message EndTransactionRequest {
+  uint64 producer_id = 1;
+  uint32 producer_epoch = 2;
+  bool commit = 3;
+}
+
+message EndTransactionResponse {
+  repeated TopicPartition partitions = 1;
+  Error error = 2;
+}
+
+message WriteTxnMarkersRequest {
+  uint64 producer_id = 1;
+  uint32 producer_epoch = 2;
+  bool commit = 3;
+  repeated TopicPartition partitions = 4;
+}
+
+message WriteTxnMarkersResponse {
+  Error error = 1;
 }
