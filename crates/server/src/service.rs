@@ -219,6 +219,11 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             );
         }
 
+        if req.is_transactional {
+            self.replica_manager
+                .track_txn_write(&req.topic, pid, producer_id, offset);
+        }
+
         let acks = proto::Acks::try_from(req.acks).unwrap_or(proto::Acks::Leader);
         if acks == proto::Acks::All && !self.cluster.is_single_broker() {
             if let Some(mut rx) = self.replica_manager.hwm_receiver(&req.topic, pid) {
@@ -339,11 +344,38 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 .high_watermark(&req.topic, req.partition)
         };
 
+        let read_committed = req.isolation_level == proto::IsolationLevel::ReadCommitted as i32;
+        let visible_limit = if read_committed {
+            self.replica_manager
+                .last_stable_offset(&req.topic, req.partition)
+        } else {
+            hwm
+        };
+
         match log.read(req.offset, max_records) {
             Ok(records) => {
+                let aborted_producers: std::collections::HashSet<u64> = if read_committed {
+                    self.replica_manager
+                        .aborted_txns_in_range(&req.topic, req.partition, req.offset, visible_limit)
+                        .into_iter()
+                        .map(|a| a.producer_id)
+                        .collect()
+                } else {
+                    std::collections::HashSet::new()
+                };
+
                 let proto_records: Vec<proto::Record> = records
                     .into_iter()
-                    .filter(|r| r.offset < hwm)
+                    .filter(|r| r.offset < visible_limit)
+                    .filter(|r| {
+                        if r.is_control {
+                            return false;
+                        }
+                        if read_committed && r.is_transactional {
+                            return !aborted_producers.contains(&r.producer_id);
+                        }
+                        true
+                    })
                     .map(storage_record_to_proto)
                     .collect();
                 Ok(Response::new(proto::FetchResponse {
@@ -1490,14 +1522,24 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 is_transactional: true,
                 is_control: true,
             };
-            if let Err(e) = log.append_record(&record) {
-                return Ok(Response::new(proto::WriteTxnMarkersResponse {
-                    error: Some(proto::Error {
-                        code: proto::ErrorCode::InternalError.into(),
-                        message: format!("failed to write txn marker: {e}"),
-                    }),
-                }));
-            }
+            let marker_offset = match log.append_record(&record) {
+                Ok(o) => o,
+                Err(e) => {
+                    return Ok(Response::new(proto::WriteTxnMarkersResponse {
+                        error: Some(proto::Error {
+                            code: proto::ErrorCode::InternalError.into(),
+                            message: format!("failed to write txn marker: {e}"),
+                        }),
+                    }));
+                }
+            };
+            self.replica_manager.complete_txn(
+                &tp.topic,
+                tp.partition,
+                req.producer_id,
+                commit,
+                marker_offset,
+            );
         }
 
         if let Some(ref ctrl) = self.controller {

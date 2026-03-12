@@ -25,6 +25,13 @@ pub enum SequenceCheckResult {
     FencedEpoch,
 }
 
+#[derive(Debug, Clone)]
+pub struct AbortedTxn {
+    pub producer_id: u64,
+    pub first_offset: u64,
+    pub last_offset: u64,
+}
+
 struct LeaderState {
     replicas: Vec<u32>,
     isr: Vec<u32>,
@@ -36,6 +43,8 @@ struct LeaderState {
     hwm_rx: watch::Receiver<u64>,
     leader_epoch: u64,
     producer_states: HashMap<u64, ProducerSequenceState>,
+    ongoing_txns: HashMap<u64, u64>,
+    aborted_txns: Vec<AbortedTxn>,
 }
 
 struct FollowerState {
@@ -115,6 +124,8 @@ impl ReplicaManager {
                         hwm_rx,
                         leader_epoch: 0,
                         producer_states: HashMap::new(),
+                        ongoing_txns: HashMap::new(),
+                        aborted_txns: Vec::new(),
                     })),
                 );
             } else {
@@ -333,6 +344,8 @@ impl ReplicaManager {
                 hwm_rx,
                 leader_epoch: epoch,
                 producer_states: HashMap::new(),
+                ongoing_txns: HashMap::new(),
+                aborted_txns: Vec::new(),
             })),
         );
     }
@@ -483,6 +496,85 @@ impl ReplicaManager {
         };
         if let Some(PartitionReplicaState::Leader(l)) = state.get_mut(&key) {
             l.producer_states = producer_states;
+        }
+    }
+
+    pub fn track_txn_write(&self, topic: &str, partition: u32, producer_id: u64, offset: u64) {
+        let mut state = self.state.write().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        if let Some(PartitionReplicaState::Leader(l)) = state.get_mut(&key) {
+            l.ongoing_txns.entry(producer_id).or_insert(offset);
+        }
+    }
+
+    pub fn complete_txn(
+        &self,
+        topic: &str,
+        partition: u32,
+        producer_id: u64,
+        committed: bool,
+        marker_offset: u64,
+    ) {
+        let mut state = self.state.write().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        if let Some(PartitionReplicaState::Leader(l)) = state.get_mut(&key) {
+            if let Some(first_offset) = l.ongoing_txns.remove(&producer_id) {
+                if !committed {
+                    l.aborted_txns.push(AbortedTxn {
+                        producer_id,
+                        first_offset,
+                        last_offset: marker_offset,
+                    });
+                }
+            }
+        }
+    }
+
+    pub fn last_stable_offset(&self, topic: &str, partition: u32) -> u64 {
+        let state = self.state.read().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        match state.get(&key) {
+            Some(PartitionReplicaState::Leader(l)) => {
+                if l.ongoing_txns.is_empty() {
+                    l.high_watermark
+                } else {
+                    let min_txn_offset = l.ongoing_txns.values().copied().min().unwrap();
+                    min_txn_offset.min(l.high_watermark)
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    pub fn aborted_txns_in_range(
+        &self,
+        topic: &str,
+        partition: u32,
+        from: u64,
+        to: u64,
+    ) -> Vec<AbortedTxn> {
+        let state = self.state.read().unwrap();
+        let key = PartitionKey {
+            topic: topic.to_string(),
+            partition,
+        };
+        match state.get(&key) {
+            Some(PartitionReplicaState::Leader(l)) => l
+                .aborted_txns
+                .iter()
+                .filter(|a| a.last_offset >= from && a.first_offset < to)
+                .cloned()
+                .collect(),
+            _ => vec![],
         }
     }
 
@@ -833,5 +925,88 @@ mod tests {
             rm.check_sequence("t", 0, 0, 0, 999),
             SequenceCheckResult::Accept
         );
+    }
+
+    #[test]
+    fn lso_equals_hwm_when_no_txns() {
+        let (store, rm) = setup(1);
+        store
+            .create_topic("t", 2, 3, &make_assignments(), &[0, 1])
+            .unwrap();
+        rm.register_topic("t", &make_assignments());
+
+        {
+            let topic = store.topic("t").unwrap();
+            let mut log = topic.partition(0).unwrap().write().unwrap();
+            log.append(b"k", b"v").unwrap();
+        }
+        rm.update_follower_progress("t", 0, 2, 1);
+        rm.update_follower_progress("t", 0, 3, 1);
+
+        assert_eq!(rm.last_stable_offset("t", 0), rm.high_watermark("t", 0));
+    }
+
+    #[test]
+    fn lso_capped_by_ongoing_txn() {
+        let (store, rm) = setup(1);
+        store
+            .create_topic("t", 2, 3, &make_assignments(), &[0, 1])
+            .unwrap();
+        rm.register_topic("t", &make_assignments());
+
+        {
+            let topic = store.topic("t").unwrap();
+            let mut log = topic.partition(0).unwrap().write().unwrap();
+            log.append(b"k1", b"v1").unwrap();
+            log.append(b"k2", b"v2").unwrap();
+            log.append(b"k3", b"v3").unwrap();
+        }
+        rm.update_follower_progress("t", 0, 2, 3);
+        rm.update_follower_progress("t", 0, 3, 3);
+        assert_eq!(rm.high_watermark("t", 0), 3);
+
+        rm.track_txn_write("t", 0, 100, 1);
+        assert_eq!(rm.last_stable_offset("t", 0), 1);
+    }
+
+    #[test]
+    fn complete_txn_commit_advances_lso() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+
+        rm.track_txn_write("t", 0, 100, 5);
+        rm.complete_txn("t", 0, 100, true, 10);
+        assert_eq!(rm.last_stable_offset("t", 0), 0);
+        assert!(rm.aborted_txns_in_range("t", 0, 0, 100).is_empty());
+    }
+
+    #[test]
+    fn complete_txn_abort_records_aborted() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+
+        rm.track_txn_write("t", 0, 100, 5);
+        rm.complete_txn("t", 0, 100, false, 10);
+
+        let aborted = rm.aborted_txns_in_range("t", 0, 0, 100);
+        assert_eq!(aborted.len(), 1);
+        assert_eq!(aborted[0].producer_id, 100);
+        assert_eq!(aborted[0].first_offset, 5);
+        assert_eq!(aborted[0].last_offset, 10);
+    }
+
+    #[test]
+    fn aborted_txns_in_range_filters_correctly() {
+        let (_store, rm) = setup(1);
+        rm.register_topic("t", &make_assignments());
+
+        rm.track_txn_write("t", 0, 100, 5);
+        rm.complete_txn("t", 0, 100, false, 10);
+        rm.track_txn_write("t", 0, 200, 20);
+        rm.complete_txn("t", 0, 200, false, 25);
+
+        assert_eq!(rm.aborted_txns_in_range("t", 0, 0, 30).len(), 2);
+        assert_eq!(rm.aborted_txns_in_range("t", 0, 11, 30).len(), 1);
+        assert_eq!(rm.aborted_txns_in_range("t", 0, 0, 5).len(), 0);
     }
 }
