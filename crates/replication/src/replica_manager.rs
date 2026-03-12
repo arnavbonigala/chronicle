@@ -316,13 +316,30 @@ impl ReplicaManager {
         }
     }
 
-    pub fn promote_to_leader(&self, topic: &str, partition: u32, epoch: u64, replicas: &[u32]) {
+    pub fn promote_to_leader(
+        &self,
+        topic: &str,
+        partition: u32,
+        epoch: u64,
+        replicas: &[u32],
+    ) {
+        self.promote_to_leader_with_leo(topic, partition, epoch, replicas, 0)
+    }
+
+    pub fn promote_to_leader_with_leo(
+        &self,
+        topic: &str,
+        partition: u32,
+        epoch: u64,
+        replicas: &[u32],
+        log_end_offset: u64,
+    ) {
         let mut state = self.state.write().unwrap();
         let key = PartitionKey {
             topic: topic.to_string(),
             partition,
         };
-        let (hwm_tx, hwm_rx) = watch::channel(0u64);
+        let (hwm_tx, hwm_rx) = watch::channel(log_end_offset);
         let followers: Vec<u32> = replicas
             .iter()
             .copied()
@@ -339,7 +356,7 @@ impl ReplicaManager {
                 isr: replicas.to_vec(),
                 follower_leos,
                 follower_last_fetch,
-                high_watermark: 0,
+                high_watermark: log_end_offset,
                 hwm_tx,
                 hwm_rx,
                 leader_epoch: epoch,

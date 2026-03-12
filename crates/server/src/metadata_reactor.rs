@@ -171,9 +171,16 @@ impl MetadataReactor {
 
         if new_leader == self.broker_id {
             let replicas = self.get_replicas_for(topic, partition);
+            let leo = if let Some(t) = self.store.topic(topic) {
+                t.partition(partition)
+                    .map(|lock| lock.read().unwrap().latest_offset())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
             self.replica_manager
-                .promote_to_leader(topic, partition, epoch, &replicas);
-            tracing::info!(topic, partition, epoch, "promoted to leader");
+                .promote_to_leader_with_leo(topic, partition, epoch, &replicas, leo);
+            tracing::info!(topic, partition, epoch, leo, "promoted to leader");
         } else {
             if self.replica_manager.is_leader(topic, partition) {
                 self.replica_manager
