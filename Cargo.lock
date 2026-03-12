@@ -384,6 +384,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "chronicle-stream"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "prost",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tonic-build",
+ "tracing",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
