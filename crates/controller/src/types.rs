@@ -96,6 +96,21 @@ pub enum MetadataRequest {
         group_id: String,
         offsets: Vec<(String, u32, u64)>,
     },
+    CreateStreamJob {
+        job_name: String,
+        input_topic: String,
+        input_partition: u32,
+        output_topic: String,
+        output_partition: u32,
+        operator_chain: Vec<String>,
+    },
+    DeleteStreamJob {
+        job_name: String,
+    },
+    UpdateStreamJobStatus {
+        job_name: String,
+        status: StreamJobStatus,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -119,6 +134,9 @@ pub enum MetadataResponse {
     },
     TxnPartitions {
         partitions: Vec<(String, u32)>,
+    },
+    StreamJobCreated {
+        job_name: String,
     },
 }
 
@@ -154,6 +172,24 @@ pub struct TxnOffsetCommits {
     pub offsets: Vec<(String, u32, u64)>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StreamJobMeta {
+    pub job_name: String,
+    pub input_topic: String,
+    pub input_partition: u32,
+    pub output_topic: String,
+    pub output_partition: u32,
+    pub operator_chain: Vec<String>,
+    pub status: StreamJobStatus,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum StreamJobStatus {
+    Created,
+    Running,
+    Stopped,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ClusterState {
     pub brokers: HashMap<u32, BrokerRegistration>,
@@ -162,6 +198,7 @@ pub struct ClusterState {
     pub next_producer_id: u64,
     pub transactional_ids: HashMap<String, TransactionalIdMapping>,
     pub transactions: HashMap<u64, TransactionState>,
+    pub stream_jobs: HashMap<String, StreamJobMeta>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

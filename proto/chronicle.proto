@@ -24,6 +24,11 @@ service Chronicle {
   rpc TxnOffsetCommit(TxnOffsetCommitRequest) returns (TxnOffsetCommitResponse);
   rpc EndTransaction(EndTransactionRequest) returns (EndTransactionResponse);
   rpc WriteTxnMarkers(WriteTxnMarkersRequest) returns (WriteTxnMarkersResponse);
+  rpc CreateStreamJob(CreateStreamJobRequest) returns (CreateStreamJobResponse);
+  rpc DeleteStreamJob(DeleteStreamJobRequest) returns (DeleteStreamJobResponse);
+  rpc ListStreamJobs(ListStreamJobsRequest) returns (ListStreamJobsResponse);
+  rpc DescribeStreamJob(DescribeStreamJobRequest) returns (DescribeStreamJobResponse);
+  rpc UpdateStreamJobStatus(UpdateStreamJobStatusRequest) returns (UpdateStreamJobStatusResponse);
 }
 
 service ControllerService {
@@ -413,4 +418,60 @@ message WriteTxnMarkersRequest {
 
 message WriteTxnMarkersResponse {
   Error error = 1;
+}
+
+message CreateStreamJobRequest {
+  string job_name = 1;
+  string input_topic = 2;
+  uint32 input_partition = 3;
+  string output_topic = 4;
+  uint32 output_partition = 5;
+  repeated string operator_chain = 6;
+}
+
+message CreateStreamJobResponse {
+  Error error = 1;
+}
+
+message DeleteStreamJobRequest {
+  string job_name = 1;
+}
+
+message DeleteStreamJobResponse {
+  Error error = 1;
+}
+
+message ListStreamJobsRequest {}
+
+message ListStreamJobsResponse {
+  repeated StreamJobInfo jobs = 1;
+  Error error = 2;
+}
+
+message DescribeStreamJobRequest {
+  string job_name = 1;
+}
+
+message DescribeStreamJobResponse {
+  StreamJobInfo job = 1;
+  Error error = 2;
+}
+
+message UpdateStreamJobStatusRequest {
+  string job_name = 1;
+  string status = 2;
+}
+
+message UpdateStreamJobStatusResponse {
+  Error error = 1;
+}
+
+message StreamJobInfo {
+  string job_name = 1;
+  string input_topic = 2;
+  uint32 input_partition = 3;
+  string output_topic = 4;
+  uint32 output_partition = 5;
+  repeated string operator_chain = 6;
+  string status = 7;
 }

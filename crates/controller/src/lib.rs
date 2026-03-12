@@ -13,7 +13,8 @@ pub use log_store::LogStore;
 pub use network::ControllerNetwork;
 pub use state_machine::StateMachineStore;
 pub use types::{
-    ClusterState, MetadataChange, MetadataRequest, MetadataResponse, TopicPartitionKey, TypeConfig,
+    ClusterState, MetadataChange, MetadataRequest, MetadataResponse, StreamJobMeta,
+    StreamJobStatus, TopicPartitionKey, TypeConfig,
 };
 
 pub use openraft::{BasicNode, Config as RaftConfig, Raft};

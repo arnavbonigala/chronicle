@@ -18,8 +18,8 @@ use std::collections::BTreeSet;
 use crate::types::{
     BrokerRegistration, BrokerStatus, ClusterState, CommittedOffset, ConsumerGroupState,
     GroupMember, MetadataChange, MetadataRequest, MetadataResponse, NodeId,
-    PartitionAssignmentMeta, TopicMetadata, TopicPartitionKey, TransactionState, TransactionStatus,
-    TxnOffsetCommits, TypeConfig,
+    PartitionAssignmentMeta, StreamJobMeta, StreamJobStatus, TopicMetadata, TopicPartitionKey,
+    TransactionState, TransactionStatus, TxnOffsetCommits, TypeConfig,
 };
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
@@ -500,6 +500,50 @@ impl StateMachineStore {
                     MetadataResponse::Error(format!(
                         "transaction not found for producer {producer_id}"
                     ))
+                }
+            }
+            MetadataRequest::CreateStreamJob {
+                job_name,
+                input_topic,
+                input_partition,
+                output_topic,
+                output_partition,
+                operator_chain,
+            } => {
+                if sm.cluster_state.stream_jobs.contains_key(job_name) {
+                    return MetadataResponse::Error(format!(
+                        "stream job already exists: {job_name}"
+                    ));
+                }
+                sm.cluster_state.stream_jobs.insert(
+                    job_name.clone(),
+                    StreamJobMeta {
+                        job_name: job_name.clone(),
+                        input_topic: input_topic.clone(),
+                        input_partition: *input_partition,
+                        output_topic: output_topic.clone(),
+                        output_partition: *output_partition,
+                        operator_chain: operator_chain.clone(),
+                        status: StreamJobStatus::Created,
+                    },
+                );
+                MetadataResponse::StreamJobCreated {
+                    job_name: job_name.clone(),
+                }
+            }
+            MetadataRequest::DeleteStreamJob { job_name } => {
+                if sm.cluster_state.stream_jobs.remove(job_name).is_some() {
+                    MetadataResponse::Ok
+                } else {
+                    MetadataResponse::Error(format!("stream job not found: {job_name}"))
+                }
+            }
+            MetadataRequest::UpdateStreamJobStatus { job_name, status } => {
+                if let Some(job) = sm.cluster_state.stream_jobs.get_mut(job_name) {
+                    job.status = status.clone();
+                    MetadataResponse::Ok
+                } else {
+                    MetadataResponse::Error(format!("stream job not found: {job_name}"))
                 }
             }
         }
@@ -1483,5 +1527,115 @@ mod tests {
         );
 
         assert!(!sm.cluster_state.consumer_groups.contains_key("g1"));
+    }
+
+    #[tokio::test]
+    async fn create_stream_job() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::CreateStreamJob {
+                job_name: "filter-job".into(),
+                input_topic: "orders".into(),
+                input_partition: 0,
+                output_topic: "large_orders".into(),
+                output_partition: 0,
+                operator_chain: vec!["filter(amount > 1000)".into()],
+            },
+        );
+        assert!(matches!(resp, MetadataResponse::StreamJobCreated { .. }));
+        assert!(sm.cluster_state.stream_jobs.contains_key("filter-job"));
+        assert_eq!(
+            sm.cluster_state.stream_jobs["filter-job"].status,
+            StreamJobStatus::Created
+        );
+    }
+
+    #[tokio::test]
+    async fn create_duplicate_stream_job_errors() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::CreateStreamJob {
+                job_name: "j".into(),
+                input_topic: "a".into(),
+                input_partition: 0,
+                output_topic: "b".into(),
+                output_partition: 0,
+                operator_chain: vec![],
+            },
+        );
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::CreateStreamJob {
+                job_name: "j".into(),
+                input_topic: "a".into(),
+                input_partition: 0,
+                output_topic: "b".into(),
+                output_partition: 0,
+                operator_chain: vec![],
+            },
+        );
+        assert!(matches!(resp, MetadataResponse::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn delete_stream_job() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::CreateStreamJob {
+                job_name: "j".into(),
+                input_topic: "a".into(),
+                input_partition: 0,
+                output_topic: "b".into(),
+                output_partition: 0,
+                operator_chain: vec![],
+            },
+        );
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::DeleteStreamJob {
+                job_name: "j".into(),
+            },
+        );
+        assert!(matches!(resp, MetadataResponse::Ok));
+        assert!(!sm.cluster_state.stream_jobs.contains_key("j"));
+    }
+
+    #[tokio::test]
+    async fn update_stream_job_status() {
+        let (store, _rx) = StateMachineStore::new();
+        let mut sm = store.sm.write().await;
+
+        store.apply_command(
+            &mut sm,
+            &MetadataRequest::CreateStreamJob {
+                job_name: "j".into(),
+                input_topic: "a".into(),
+                input_partition: 0,
+                output_topic: "b".into(),
+                output_partition: 0,
+                operator_chain: vec![],
+            },
+        );
+        let resp = store.apply_command(
+            &mut sm,
+            &MetadataRequest::UpdateStreamJobStatus {
+                job_name: "j".into(),
+                status: StreamJobStatus::Running,
+            },
+        );
+        assert!(matches!(resp, MetadataResponse::Ok));
+        assert_eq!(
+            sm.cluster_state.stream_jobs["j"].status,
+            StreamJobStatus::Running
+        );
     }
 }

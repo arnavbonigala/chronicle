@@ -1671,6 +1671,225 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             error: None,
         }))
     }
+
+    async fn create_stream_job(
+        &self,
+        request: Request<proto::CreateStreamJobRequest>,
+    ) -> Result<Response<proto::CreateStreamJobResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::CreateStreamJobResponse {
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        match ctrl
+            .propose(MetadataRequest::CreateStreamJob {
+                job_name: req.job_name,
+                input_topic: req.input_topic,
+                input_partition: req.input_partition,
+                output_topic: req.output_topic,
+                output_partition: req.output_partition,
+                operator_chain: req.operator_chain,
+            })
+            .await
+        {
+            Ok(MetadataResponse::StreamJobCreated { .. }) | Ok(MetadataResponse::Ok) => {
+                Ok(Response::new(proto::CreateStreamJobResponse {
+                    error: None,
+                }))
+            }
+            Ok(MetadataResponse::Error(msg)) => Ok(Response::new(proto::CreateStreamJobResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: msg,
+                }),
+            })),
+            Ok(_) => Ok(Response::new(proto::CreateStreamJobResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+            })),
+            Err(e) => Ok(Response::new(proto::CreateStreamJobResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
+    }
+
+    async fn delete_stream_job(
+        &self,
+        request: Request<proto::DeleteStreamJobRequest>,
+    ) -> Result<Response<proto::DeleteStreamJobResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::DeleteStreamJobResponse {
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        match ctrl
+            .propose(MetadataRequest::DeleteStreamJob {
+                job_name: req.job_name,
+            })
+            .await
+        {
+            Ok(MetadataResponse::Ok) => Ok(Response::new(proto::DeleteStreamJobResponse {
+                error: None,
+            })),
+            Ok(MetadataResponse::Error(msg)) => Ok(Response::new(proto::DeleteStreamJobResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: msg,
+                }),
+            })),
+            Ok(_) => Ok(Response::new(proto::DeleteStreamJobResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+            })),
+            Err(e) => Ok(Response::new(proto::DeleteStreamJobResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
+    }
+
+    async fn list_stream_jobs(
+        &self,
+        _request: Request<proto::ListStreamJobsRequest>,
+    ) -> Result<Response<proto::ListStreamJobsResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::ListStreamJobsResponse {
+                    jobs: vec![],
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let state = ctrl.cluster_state().await;
+        let jobs: Vec<proto::StreamJobInfo> = state
+            .stream_jobs
+            .values()
+            .map(stream_job_to_proto)
+            .collect();
+        Ok(Response::new(proto::ListStreamJobsResponse {
+            jobs,
+            error: None,
+        }))
+    }
+
+    async fn describe_stream_job(
+        &self,
+        request: Request<proto::DescribeStreamJobRequest>,
+    ) -> Result<Response<proto::DescribeStreamJobResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::DescribeStreamJobResponse {
+                    job: None,
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        let state = ctrl.cluster_state().await;
+        match state.stream_jobs.get(&req.job_name) {
+            Some(j) => Ok(Response::new(proto::DescribeStreamJobResponse {
+                job: Some(stream_job_to_proto(j)),
+                error: None,
+            })),
+            None => Ok(Response::new(proto::DescribeStreamJobResponse {
+                job: None,
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: format!("stream job not found: {}", req.job_name),
+                }),
+            })),
+        }
+    }
+
+    async fn update_stream_job_status(
+        &self,
+        request: Request<proto::UpdateStreamJobStatusRequest>,
+    ) -> Result<Response<proto::UpdateStreamJobStatusResponse>, Status> {
+        let ctrl = match self.controller {
+            Some(ref c) => c,
+            None => {
+                return Ok(Response::new(proto::UpdateStreamJobStatusResponse {
+                    error: Some(require_cluster_error()),
+                }))
+            }
+        };
+        let req = request.into_inner();
+        let status = match req.status.as_str() {
+            "Running" => chronicle_controller::StreamJobStatus::Running,
+            "Stopped" => chronicle_controller::StreamJobStatus::Stopped,
+            "Created" => chronicle_controller::StreamJobStatus::Created,
+            other => {
+                return Ok(Response::new(proto::UpdateStreamJobStatusResponse {
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InvalidRequest.into(),
+                        message: format!("invalid status: {other}"),
+                    }),
+                }));
+            }
+        };
+        match ctrl
+            .propose(MetadataRequest::UpdateStreamJobStatus {
+                job_name: req.job_name,
+                status,
+            })
+            .await
+        {
+            Ok(MetadataResponse::Ok) => Ok(Response::new(proto::UpdateStreamJobStatusResponse {
+                error: None,
+            })),
+            Ok(MetadataResponse::Error(msg)) => {
+                Ok(Response::new(proto::UpdateStreamJobStatusResponse {
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InternalError.into(),
+                        message: msg,
+                    }),
+                }))
+            }
+            Ok(_) => Ok(Response::new(proto::UpdateStreamJobStatusResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: "unexpected response".into(),
+                }),
+            })),
+            Err(e) => Ok(Response::new(proto::UpdateStreamJobStatusResponse {
+                error: Some(proto::Error {
+                    code: proto::ErrorCode::InternalError.into(),
+                    message: e,
+                }),
+            })),
+        }
+    }
+}
+
+fn stream_job_to_proto(j: &chronicle_controller::StreamJobMeta) -> proto::StreamJobInfo {
+    proto::StreamJobInfo {
+        job_name: j.job_name.clone(),
+        input_topic: j.input_topic.clone(),
+        input_partition: j.input_partition,
+        output_topic: j.output_topic.clone(),
+        output_partition: j.output_partition,
+        operator_chain: j.operator_chain.clone(),
+        status: format!("{:?}", j.status),
+    }
 }
 
 impl ChronicleService {

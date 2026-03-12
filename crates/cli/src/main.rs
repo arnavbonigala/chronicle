@@ -140,6 +140,38 @@ enum Command {
         #[arg(long)]
         timestamp: u64,
     },
+    CreateStreamJob {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        input_topic: String,
+        #[arg(long, default_value_t = 0)]
+        input_partition: u32,
+        #[arg(long)]
+        output_topic: String,
+        #[arg(long, default_value_t = 0)]
+        output_partition: u32,
+        #[arg(long, value_delimiter = ',')]
+        operators: Vec<String>,
+    },
+    DeleteStreamJob {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        name: String,
+    },
+    ListStreamJobs {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+    },
+    DescribeStreamJob {
+        #[arg(long, default_value = "http://127.0.0.1:9092")]
+        server: String,
+        #[arg(long)]
+        name: String,
+    },
     TransactionalProduce {
         #[arg(long, default_value = "http://127.0.0.1:9092")]
         server: String,
@@ -480,6 +512,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("offset={}", resp.offset);
             } else {
                 println!("no offset found for timestamp {}", timestamp);
+            }
+        }
+        Command::CreateStreamJob {
+            server,
+            name,
+            input_topic,
+            input_partition,
+            output_topic,
+            output_partition,
+            operators,
+        } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .create_stream_job(proto::CreateStreamJobRequest {
+                    job_name: name.clone(),
+                    input_topic: input_topic.clone(),
+                    input_partition,
+                    output_topic: output_topic.clone(),
+                    output_partition,
+                    operator_chain: operators.clone(),
+                })
+                .await?
+                .into_inner();
+            check_error(&resp.error, None);
+            println!(
+                "created stream job '{}': {} -> [{}] -> {}",
+                name,
+                input_topic,
+                operators.join(" -> "),
+                output_topic
+            );
+        }
+        Command::DeleteStreamJob { server, name } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .delete_stream_job(proto::DeleteStreamJobRequest {
+                    job_name: name.clone(),
+                })
+                .await?
+                .into_inner();
+            check_error(&resp.error, None);
+            println!("deleted stream job '{}'", name);
+        }
+        Command::ListStreamJobs { server } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .list_stream_jobs(proto::ListStreamJobsRequest {})
+                .await?
+                .into_inner();
+            check_error(&resp.error, None);
+            if resp.jobs.is_empty() {
+                println!("no stream jobs");
+            } else {
+                println!(
+                    "{:<20} {:<15} {:<15} {:<10}",
+                    "NAME", "INPUT", "OUTPUT", "STATUS"
+                );
+                for j in &resp.jobs {
+                    println!(
+                        "{:<20} {:<15} {:<15} {:<10}",
+                        j.job_name,
+                        format!("{}/{}", j.input_topic, j.input_partition),
+                        format!("{}/{}", j.output_topic, j.output_partition),
+                        j.status
+                    );
+                }
+            }
+        }
+        Command::DescribeStreamJob { server, name } => {
+            let mut client = connect(&server).await?;
+            let resp = client
+                .describe_stream_job(proto::DescribeStreamJobRequest {
+                    job_name: name.clone(),
+                })
+                .await?
+                .into_inner();
+            check_error(&resp.error, None);
+            if let Some(j) = resp.job {
+                println!("name:       {}", j.job_name);
+                println!("input:      {}/{}", j.input_topic, j.input_partition);
+                println!("output:     {}/{}", j.output_topic, j.output_partition);
+                println!("operators:  [{}]", j.operator_chain.join(" -> "));
+                println!("status:     {}", j.status);
+            } else {
+                println!("stream job '{}' not found", name);
             }
         }
         Command::TransactionalProduce {
