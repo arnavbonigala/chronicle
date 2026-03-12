@@ -178,6 +178,29 @@ async fn run_multi_broker(
 
     let controller_grpc = ControllerGrpcService::new(raft.clone(), sm_store.clone());
 
+    tracing::info!(
+        addr = %args.listen_addr,
+        broker_id = args.broker_id,
+        peers = args.peers.len(),
+        "starting chronicle server (multi-broker mode)"
+    );
+
+    let addr = args.listen_addr.parse()?;
+    let svc = service::ChronicleService::new(
+        store.clone(),
+        replica_manager.clone(),
+        cluster.clone(),
+        Some(controller.clone()),
+    );
+
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(proto::chronicle_server::ChronicleServer::new(svc))
+            .add_service(ControllerServiceServer::new(controller_grpc))
+            .serve(addr)
+            .await
+    });
+
     tracing::info!("waiting for raft leader election...");
     loop {
         if raft.current_leader().await.is_some() {
@@ -191,13 +214,36 @@ async fn run_multi_broker(
         .broker_addr(args.broker_id)
         .unwrap_or_default()
         .to_string();
-    controller
-        .propose(MetadataRequest::RegisterBroker {
-            id: args.broker_id,
-            addr: self_addr,
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to register broker: {e}"))?;
+
+    if controller.is_leader().await {
+        controller
+            .propose(MetadataRequest::RegisterBroker {
+                id: args.broker_id,
+                addr: self_addr,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to register broker: {e}"))?;
+    } else {
+        let leader_id = raft.current_leader().await.unwrap() as u32;
+        let leader_addr = cluster
+            .broker_addr(leader_id)
+            .ok_or_else(|| anyhow::anyhow!("leader {leader_id} addr not in cluster config"))?;
+        let mut ctrl_client =
+            proto::controller_service_client::ControllerServiceClient::connect(leader_addr.to_string())
+                .await
+                .map_err(|e| anyhow::anyhow!("connect to leader for registration: {e}"))?;
+        let resp = ctrl_client
+            .register_broker(proto::RegisterBrokerRequest {
+                broker_id: args.broker_id,
+                addr: self_addr,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("register_broker rpc: {e}"))?
+            .into_inner();
+        if !resp.success {
+            anyhow::bail!("leader rejected registration: {:?}", resp.error);
+        }
+    }
 
     let reactor = metadata_reactor::MetadataReactor::new(
         args.broker_id,
@@ -209,6 +255,7 @@ async fn run_multi_broker(
 
     let hb_controller = controller.clone();
     let hb_broker_id = args.broker_id;
+    let hb_cluster = cluster.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3));
         loop {
@@ -217,14 +264,39 @@ async fn run_multi_broker(
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64;
-            if let Err(e) = hb_controller
-                .propose(MetadataRequest::Heartbeat {
-                    broker_id: hb_broker_id,
-                    timestamp_ms: now_ms,
-                })
-                .await
-            {
-                tracing::debug!(error = %e, "heartbeat propose failed");
+            if hb_controller.is_leader().await {
+                if let Err(e) = hb_controller
+                    .propose(MetadataRequest::Heartbeat {
+                        broker_id: hb_broker_id,
+                        timestamp_ms: now_ms,
+                    })
+                    .await
+                {
+                    tracing::debug!(error = %e, "heartbeat propose failed");
+                }
+            } else if let Some(leader_id) = hb_controller.raft().current_leader().await {
+                let leader_id = leader_id as u32;
+                if let Some(addr) = hb_cluster.broker_addr(leader_id) {
+                    match proto::controller_service_client::ControllerServiceClient::connect(
+                        addr.to_string(),
+                    )
+                    .await
+                    {
+                        Ok(mut client) => {
+                            if let Err(e) = client
+                                .heartbeat(proto::HeartbeatRequest {
+                                    broker_id: hb_broker_id,
+                                })
+                                .await
+                            {
+                                tracing::debug!(error = %e, "heartbeat rpc failed");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(error = %e, "connect to leader for heartbeat failed");
+                        }
+                    }
+                }
             }
         }
     });
@@ -250,21 +322,9 @@ async fn run_multi_broker(
         }
     });
 
-    tracing::info!(
-        addr = %args.listen_addr,
-        broker_id = args.broker_id,
-        peers = args.peers.len(),
-        "starting chronicle server (multi-broker mode)"
-    );
-
-    let addr = args.listen_addr.parse()?;
-    let svc = service::ChronicleService::new(store, replica_manager, cluster, Some(controller));
-
-    Server::builder()
-        .add_service(proto::chronicle_server::ChronicleServer::new(svc))
-        .add_service(ControllerServiceServer::new(controller_grpc))
-        .serve(addr)
-        .await?;
+    server_handle
+        .await
+        .map_err(|e| anyhow::anyhow!("server task failed: {e}"))??;
 
     Ok(())
 }
