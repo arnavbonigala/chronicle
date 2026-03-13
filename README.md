@@ -74,6 +74,28 @@ cargo build --release
 
 Single-broker mode (no `--peers`) runs without Raft.
 
+## Benchmarks
+
+All benchmarks run on Apple M3, 16 GiB RAM, macOS, Rust 1.94.0, `release` profile.
+
+| Layer | Benchmark | Latency | Throughput |
+|---|---|---|---|
+| Storage | Segment append (80 B) | 5.85 µs | ~170k writes/s |
+| Storage | Log sequential read (1k × 80 B) | 129 µs | 966 MiB/s |
+| Storage | Crash recovery (100k records) | 39.3 ms | 2.54 M records/s |
+| Replication | `is_leader` check | 37 ns | 26.9 M/s |
+| Replication | `check_sequence` (accept) | 42.6 ns | 23.5 M/s |
+| Replication | `update_follower_progress` | 98 ns | 10.2 M/s |
+| Replication | ISR expiry (1000 partitions) | 14.7 µs | — |
+| Controller | Heartbeat command | 25 ns | 40 M/s |
+| Controller | `JoinGroup` (100p / 10m) | 27.8 µs | — |
+| Controller | Snapshot serialize (50 topics) | 21.5 µs | — |
+| Controller | Snapshot deserialize (50 topics) | 77.8 µs | — |
+| Stream | Passthrough clone | 60 ns | 16.5 M/s |
+| Stream | Filter (pass) | 57 ns | 17.6 M/s |
+| Stream | Pipeline 3-op batch (1k) | 147 µs | 6.82 M records/s |
+
 ## Documentation
 
 See `docs/ARCHITECTURE.md` for a detailed design walkthrough.
+See `docs/BENCHMARKS.md` for full results and analysis.
