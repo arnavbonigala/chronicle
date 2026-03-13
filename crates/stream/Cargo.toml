@@ -16,3 +16,10 @@ tracing = "0.1"
 
 [build-dependencies]
 tonic-build = "0.12"
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
+
+[[bench]]
+name = "stream"
+harness = false
