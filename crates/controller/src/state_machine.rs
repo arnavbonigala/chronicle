@@ -228,9 +228,9 @@ impl StateMachineStore {
                     .get(member_id)
                     .cloned()
                     .unwrap_or_default();
-                let gen = group.generation_id;
+                let generation = group.generation_id;
                 MetadataResponse::GroupJoined {
-                    generation_id: gen,
+                    generation_id: generation,
                     member_id: member_id.clone(),
                     assignments: member_assignments
                         .into_iter()
