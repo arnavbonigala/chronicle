@@ -1,3 +1,4 @@
+use openraft::BasicNode;
 use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError, Unreachable};
 use openraft::network::RPCOption;
 use openraft::network::RaftNetwork;
@@ -6,7 +7,6 @@ use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
     VoteRequest, VoteResponse,
 };
-use openraft::BasicNode;
 
 use crate::types::{NodeId, TypeConfig};
 

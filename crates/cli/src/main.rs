@@ -774,15 +774,15 @@ async fn run_consume_group(
                     .await?
                     .into_inner();
 
-                if let Some(ref err) = fetch_resp.error {
-                    if err.code == proto::ErrorCode::NotLeaderForPartition as i32 {
-                        eprintln!(
-                            "not leader for {}/{}, triggering rejoin",
-                            a.topic, a.partition
-                        );
-                        rebalance = true;
-                        break;
-                    }
+                if let Some(ref err) = fetch_resp.error
+                    && err.code == proto::ErrorCode::NotLeaderForPartition as i32
+                {
+                    eprintln!(
+                        "not leader for {}/{}, triggering rejoin",
+                        a.topic, a.partition
+                    );
+                    rebalance = true;
+                    break;
                 }
 
                 for record in &fetch_resp.records {
@@ -811,12 +811,12 @@ async fn run_consume_group(
                     })
                     .await?
                     .into_inner();
-                if let Some(ref err) = hb_resp.error {
-                    if err.code != proto::ErrorCode::None as i32 {
-                        eprintln!("heartbeat error: {}, rejoining", err.message);
-                        rebalance = true;
-                        continue;
-                    }
+                if let Some(ref err) = hb_resp.error
+                    && err.code != proto::ErrorCode::None as i32
+                {
+                    eprintln!("heartbeat error: {}, rejoining", err.message);
+                    rebalance = true;
+                    continue;
                 }
                 if hb_resp.rebalance_required {
                     println!("rebalance required, rejoining group");
@@ -895,16 +895,16 @@ fn print_partition_table(t: &proto::TopicInfo) {
 }
 
 fn check_error(error: &Option<proto::Error>, leader_hint: Option<u32>) {
-    if let Some(err) = error {
-        if err.code != proto::ErrorCode::None as i32 {
-            eprintln!("error: {}", err.message);
-            if err.code == proto::ErrorCode::NotLeaderForPartition as i32 {
-                if let Some(leader_id) = leader_hint {
-                    eprintln!("hint: leader is broker {}", leader_id);
-                }
-            }
-            std::process::exit(1);
+    if let Some(err) = error
+        && err.code != proto::ErrorCode::None as i32
+    {
+        eprintln!("error: {}", err.message);
+        if err.code == proto::ErrorCode::NotLeaderForPartition as i32
+            && let Some(leader_id) = leader_hint
+        {
+            eprintln!("hint: leader is broker {}", leader_id);
         }
+        std::process::exit(1);
     }
 }
 

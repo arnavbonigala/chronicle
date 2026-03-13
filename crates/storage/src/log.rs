@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::config::StorageConfig;
 use crate::error::{Result, StorageError};
 use crate::record::Record;
-use crate::segment::{parse_base_offset, Segment};
+use crate::segment::{Segment, parse_base_offset};
 
 pub struct Log {
     dir: PathBuf,

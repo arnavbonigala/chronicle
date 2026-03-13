@@ -3,8 +3,6 @@ use std::fmt::Debug;
 use std::ops::RangeBounds;
 use std::sync::Arc;
 
-use openraft::storage::RaftLogReader;
-use openraft::storage::RaftLogStorage;
 use openraft::Entry;
 use openraft::LogId;
 use openraft::LogState;
@@ -13,6 +11,8 @@ use openraft::RaftLogId;
 use openraft::StorageError;
 use openraft::StorageIOError;
 use openraft::Vote;
+use openraft::storage::RaftLogReader;
+use openraft::storage::RaftLogStorage;
 use tokio::sync::RwLock;
 
 use crate::types::{NodeId, TypeConfig};

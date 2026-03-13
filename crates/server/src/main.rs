@@ -45,15 +45,15 @@ fn parse_cluster_config(broker_id: u32, listen_addr: &str, peers: &[String]) -> 
         addr: format!("http://{listen_addr}"),
     }];
     for peer in peers {
-        if let Some((id_str, addr)) = peer.split_once('=') {
-            if let Ok(id) = id_str.parse::<u32>() {
-                let addr = if addr.starts_with("http") {
-                    addr.to_string()
-                } else {
-                    format!("http://{addr}")
-                };
-                brokers.push(BrokerInfo { id, addr });
-            }
+        if let Some((id_str, addr)) = peer.split_once('=')
+            && let Ok(id) = id_str.parse::<u32>()
+        {
+            let addr = if addr.starts_with("http") {
+                addr.to_string()
+            } else {
+                format!("http://{addr}")
+            };
+            brokers.push(BrokerInfo { id, addr });
         }
     }
     ClusterConfig { broker_id, brokers }

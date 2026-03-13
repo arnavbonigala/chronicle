@@ -122,10 +122,10 @@ impl StreamProcessor {
             .await?
             .into_inner();
 
-        if let Some(ref err) = fetch_resp.error {
-            if err.code != proto::ErrorCode::None as i32 {
-                return Err(err.message.clone().into());
-            }
+        if let Some(ref err) = fetch_resp.error
+            && err.code != proto::ErrorCode::None as i32
+        {
+            return Err(err.message.clone().into());
         }
 
         let mut processed = 0;
@@ -167,10 +167,10 @@ impl StreamProcessor {
                     .await?
                     .into_inner();
 
-                if let Some(ref err) = produce_resp.error {
-                    if err.code != proto::ErrorCode::None as i32 {
-                        return Err(err.message.clone().into());
-                    }
+                if let Some(ref err) = produce_resp.error
+                    && err.code != proto::ErrorCode::None as i32
+                {
+                    return Err(err.message.clone().into());
                 }
             }
 

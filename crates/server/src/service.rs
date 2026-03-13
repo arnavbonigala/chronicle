@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -225,30 +225,31 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
         }
 
         let acks = proto::Acks::try_from(req.acks).unwrap_or(proto::Acks::Leader);
-        if acks == proto::Acks::All && !self.cluster.is_single_broker() {
-            if let Some(mut rx) = self.replica_manager.hwm_receiver(&req.topic, pid) {
-                let timeout = tokio::time::timeout(Duration::from_secs(30), async {
-                    loop {
-                        if *rx.borrow() > offset {
-                            break;
-                        }
-                        if rx.changed().await.is_err() {
-                            break;
-                        }
+        if acks == proto::Acks::All
+            && !self.cluster.is_single_broker()
+            && let Some(mut rx) = self.replica_manager.hwm_receiver(&req.topic, pid)
+        {
+            let timeout = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if *rx.borrow() > offset {
+                        break;
                     }
-                })
-                .await;
-                if timeout.is_err() {
-                    return Ok(Response::new(proto::ProduceResponse {
-                        offset,
-                        partition: pid,
-                        error: Some(proto::Error {
-                            code: proto::ErrorCode::InternalError.into(),
-                            message: "timeout waiting for replication".into(),
-                        }),
-                        leader_broker_id: None,
-                    }));
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
                 }
+            })
+            .await;
+            if timeout.is_err() {
+                return Ok(Response::new(proto::ProduceResponse {
+                    offset,
+                    partition: pid,
+                    error: Some(proto::Error {
+                        code: proto::ErrorCode::InternalError.into(),
+                        message: "timeout waiting for replication".into(),
+                    }),
+                    leader_broker_id: None,
+                }));
             }
         }
 
@@ -833,7 +834,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 return Ok(Response::new(proto::JoinGroupResponse {
                     error: Some(require_cluster_error()),
                     ..Default::default()
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -904,7 +905,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             None => {
                 return Ok(Response::new(proto::LeaveGroupResponse {
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -935,7 +936,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 return Ok(Response::new(proto::ConsumerHeartbeatResponse {
                     rebalance_required: false,
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -987,7 +988,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             None => {
                 return Ok(Response::new(proto::CommitOffsetResponse {
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1037,7 +1038,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 return Ok(Response::new(proto::FetchOffsetsResponse {
                     offsets: vec![],
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1097,7 +1098,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 return Ok(Response::new(proto::ListGroupsResponse {
                     group_ids: vec![],
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let state = ctrl.cluster_state().await;
@@ -1245,7 +1246,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             None => {
                 return Ok(Response::new(proto::BeginTransactionResponse {
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1290,7 +1291,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             None => {
                 return Ok(Response::new(proto::AddPartitionsToTxnResponse {
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1341,7 +1342,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             None => {
                 return Ok(Response::new(proto::AddOffsetsToTxnResponse {
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1385,7 +1386,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             None => {
                 return Ok(Response::new(proto::TxnOffsetCommitResponse {
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1436,7 +1437,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 return Ok(Response::new(proto::EndTransactionResponse {
                     partitions: vec![],
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1478,39 +1479,39 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
         };
 
         for (topic, partition) in &partitions {
-            if let Some(t) = self.store.topic(topic) {
-                if let Some(log_lock) = t.partition(*partition) {
-                    let mut log = log_lock.write().unwrap();
-                    let timestamp_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64;
-                    let marker_value = if req.commit {
-                        b"COMMIT".to_vec()
-                    } else {
-                        b"ABORT".to_vec()
-                    };
-                    let record = Record {
-                        offset: log.latest_offset(),
-                        timestamp_ms,
-                        key: Bytes::new(),
-                        value: Bytes::from(marker_value),
-                        headers: vec![],
-                        producer_id: req.producer_id,
-                        producer_epoch: req.producer_epoch as u16,
-                        sequence_number: 0,
-                        is_transactional: true,
-                        is_control: true,
-                    };
-                    if let Ok(marker_offset) = log.append_record(&record) {
-                        self.replica_manager.complete_txn(
-                            topic,
-                            *partition,
-                            req.producer_id,
-                            req.commit,
-                            marker_offset,
-                        );
-                    }
+            if let Some(t) = self.store.topic(topic)
+                && let Some(log_lock) = t.partition(*partition)
+            {
+                let mut log = log_lock.write().unwrap();
+                let timestamp_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                let marker_value = if req.commit {
+                    b"COMMIT".to_vec()
+                } else {
+                    b"ABORT".to_vec()
+                };
+                let record = Record {
+                    offset: log.latest_offset(),
+                    timestamp_ms,
+                    key: Bytes::new(),
+                    value: Bytes::from(marker_value),
+                    headers: vec![],
+                    producer_id: req.producer_id,
+                    producer_epoch: req.producer_epoch as u16,
+                    sequence_number: 0,
+                    is_transactional: true,
+                    is_control: true,
+                };
+                if let Ok(marker_offset) = log.append_record(&record) {
+                    self.replica_manager.complete_txn(
+                        topic,
+                        *partition,
+                        req.producer_id,
+                        req.commit,
+                        marker_offset,
+                    );
                 }
             }
         }
@@ -1615,7 +1616,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 return Ok(Response::new(proto::DescribeGroupResponse {
                     error: Some(require_cluster_error()),
                     ..Default::default()
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1681,7 +1682,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             None => {
                 return Ok(Response::new(proto::CreateStreamJobResponse {
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1731,7 +1732,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             None => {
                 return Ok(Response::new(proto::DeleteStreamJobResponse {
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1775,7 +1776,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 return Ok(Response::new(proto::ListStreamJobsResponse {
                     jobs: vec![],
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let state = ctrl.cluster_state().await;
@@ -1800,7 +1801,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
                 return Ok(Response::new(proto::DescribeStreamJobResponse {
                     job: None,
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();
@@ -1829,7 +1830,7 @@ impl proto::chronicle_server::Chronicle for ChronicleService {
             None => {
                 return Ok(Response::new(proto::UpdateStreamJobStatusResponse {
                     error: Some(require_cluster_error()),
-                }))
+                }));
             }
         };
         let req = request.into_inner();

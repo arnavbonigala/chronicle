@@ -75,9 +75,7 @@ fn server_bin() -> String {
     path.pop(); // remove test binary name
     path.pop(); // remove `deps`
     path.push("chronicle-server");
-    path.to_str()
-        .expect("non-utf8 path")
-        .to_string()
+    path.to_str().expect("non-utf8 path").to_string()
 }
 
 fn alloc_addr() -> String {

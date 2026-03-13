@@ -1,6 +1,6 @@
 use std::io::Cursor;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use openraft::storage::RaftStateMachine;
@@ -9,7 +9,7 @@ use openraft::{
     BasicNode, Entry, EntryPayload, LogId, RaftSnapshotBuilder, SnapshotMeta, StorageError,
     StorageIOError, StoredMembership,
 };
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 use chronicle_replication::assignment::compute_assignments;
 
@@ -145,15 +145,14 @@ impl StateMachineStore {
                 new_leader,
                 epoch,
             } => {
-                if let Some(t) = sm.cluster_state.topics.get_mut(topic) {
-                    if let Some(a) = t
+                if let Some(t) = sm.cluster_state.topics.get_mut(topic)
+                    && let Some(a) = t
                         .assignments
                         .iter_mut()
                         .find(|a| a.partition_id == *partition)
-                    {
-                        a.leader = *new_leader;
-                        a.leader_epoch = *epoch;
-                    }
+                {
+                    a.leader = *new_leader;
+                    a.leader_epoch = *epoch;
                 }
                 self.change_tx
                     .send(MetadataChange::LeaderChanged {
@@ -170,14 +169,13 @@ impl StateMachineStore {
                 partition,
                 isr,
             } => {
-                if let Some(t) = sm.cluster_state.topics.get_mut(topic) {
-                    if let Some(a) = t
+                if let Some(t) = sm.cluster_state.topics.get_mut(topic)
+                    && let Some(a) = t
                         .assignments
                         .iter_mut()
                         .find(|a| a.partition_id == *partition)
-                    {
-                        a.isr = isr.clone();
-                    }
+                {
+                    a.isr = isr.clone();
                 }
                 self.change_tx
                     .send(MetadataChange::ISRChanged {
@@ -293,15 +291,15 @@ impl StateMachineStore {
                 group_id,
                 member_id,
             } => {
-                if let Some(group) = sm.cluster_state.consumer_groups.get_mut(group_id) {
-                    if group.members.remove(member_id).is_some() {
-                        if group.members.is_empty() {
-                            sm.cluster_state.consumer_groups.remove(group_id);
-                        } else {
-                            group.generation_id += 1;
-                            group.assignments =
-                                compute_group_assignments(&group.members, &sm.cluster_state.topics);
-                        }
+                if let Some(group) = sm.cluster_state.consumer_groups.get_mut(group_id)
+                    && group.members.remove(member_id).is_some()
+                {
+                    if group.members.is_empty() {
+                        sm.cluster_state.consumer_groups.remove(group_id);
+                    } else {
+                        group.generation_id += 1;
+                        group.assignments =
+                            compute_group_assignments(&group.members, &sm.cluster_state.topics);
                     }
                 }
                 MetadataResponse::Ok
@@ -457,29 +455,27 @@ impl StateMachineStore {
             MetadataRequest::WriteTxnMarkerComplete { producer_id } => {
                 if let Some(txn) = sm.cluster_state.transactions.remove(producer_id) {
                     let committed = txn.status == TransactionStatus::PrepareCommit;
-                    if committed {
-                        if let Some(oc) = &txn.offset_commits {
-                            let group = sm
-                                .cluster_state
-                                .consumer_groups
-                                .entry(oc.group_id.clone())
-                                .or_insert_with(|| ConsumerGroupState {
-                                    group_id: oc.group_id.clone(),
-                                    ..Default::default()
-                                });
-                            let now = current_time_ms();
-                            for (topic, partition, offset) in &oc.offsets {
-                                group.offsets.insert(
-                                    TopicPartitionKey {
-                                        topic: topic.clone(),
-                                        partition: *partition,
-                                    },
-                                    CommittedOffset {
-                                        offset: *offset,
-                                        timestamp_ms: now,
-                                    },
-                                );
-                            }
+                    if committed && let Some(oc) = &txn.offset_commits {
+                        let group = sm
+                            .cluster_state
+                            .consumer_groups
+                            .entry(oc.group_id.clone())
+                            .or_insert_with(|| ConsumerGroupState {
+                                group_id: oc.group_id.clone(),
+                                ..Default::default()
+                            });
+                        let now = current_time_ms();
+                        for (topic, partition, offset) in &oc.offsets {
+                            group.offsets.insert(
+                                TopicPartitionKey {
+                                    topic: topic.clone(),
+                                    partition: *partition,
+                                },
+                                CommittedOffset {
+                                    offset: *offset,
+                                    timestamp_ms: now,
+                                },
+                            );
                         }
                     }
                     let partitions: Vec<(String, u32)> = txn

@@ -220,10 +220,10 @@ impl ReplicaManager {
             topic: topic.to_string(),
             partition,
         };
-        if let Some(PartitionReplicaState::Follower(f)) = state.get_mut(&key) {
-            if hwm > f.high_watermark {
-                f.high_watermark = hwm;
-            }
+        if let Some(PartitionReplicaState::Follower(f)) = state.get_mut(&key)
+            && hwm > f.high_watermark
+        {
+            f.high_watermark = hwm;
         }
     }
 
@@ -534,16 +534,15 @@ impl ReplicaManager {
             topic: topic.to_string(),
             partition,
         };
-        if let Some(PartitionReplicaState::Leader(l)) = state.get_mut(&key) {
-            if let Some(first_offset) = l.ongoing_txns.remove(&producer_id) {
-                if !committed {
-                    l.aborted_txns.push(AbortedTxn {
-                        producer_id,
-                        first_offset,
-                        last_offset: marker_offset,
-                    });
-                }
-            }
+        if let Some(PartitionReplicaState::Leader(l)) = state.get_mut(&key)
+            && let Some(first_offset) = l.ongoing_txns.remove(&producer_id)
+            && !committed
+        {
+            l.aborted_txns.push(AbortedTxn {
+                producer_id,
+                first_offset,
+                last_offset: marker_offset,
+            });
         }
     }
 
