@@ -66,7 +66,18 @@ impl Drop for ServerProcess {
 }
 
 fn server_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_chronicle-server").expect("CARGO_BIN_EXE_chronicle-server not set")
+    if let Ok(p) = std::env::var("CARGO_BIN_EXE_chronicle-server") {
+        return p;
+    }
+    // Fallback: test binary lives in target/<profile>/deps/, the server
+    // binary is in target/<profile>/.
+    let mut path = std::env::current_exe().expect("current_exe");
+    path.pop(); // remove test binary name
+    path.pop(); // remove `deps`
+    path.push("chronicle-server");
+    path.to_str()
+        .expect("non-utf8 path")
+        .to_string()
 }
 
 fn alloc_addr() -> String {
