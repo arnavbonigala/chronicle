@@ -62,7 +62,11 @@ impl StateMachineStore {
         self.change_tx.subscribe()
     }
 
-    fn apply_command(&self, sm: &mut StateMachineData, req: &MetadataRequest) -> MetadataResponse {
+    pub fn apply_command(
+        &self,
+        sm: &mut StateMachineData,
+        req: &MetadataRequest,
+    ) -> MetadataResponse {
         match req {
             MetadataRequest::RegisterBroker { id, addr } => {
                 sm.cluster_state.brokers.insert(
