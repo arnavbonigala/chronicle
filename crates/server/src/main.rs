@@ -228,10 +228,11 @@ async fn run_multi_broker(
         let leader_addr = cluster
             .broker_addr(leader_id)
             .ok_or_else(|| anyhow::anyhow!("leader {leader_id} addr not in cluster config"))?;
-        let mut ctrl_client =
-            proto::controller_service_client::ControllerServiceClient::connect(leader_addr.to_string())
-                .await
-                .map_err(|e| anyhow::anyhow!("connect to leader for registration: {e}"))?;
+        let mut ctrl_client = proto::controller_service_client::ControllerServiceClient::connect(
+            leader_addr.to_string(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("connect to leader for registration: {e}"))?;
         let resp = ctrl_client
             .register_broker(proto::RegisterBrokerRequest {
                 broker_id: args.broker_id,

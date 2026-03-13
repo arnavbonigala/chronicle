@@ -316,13 +316,7 @@ impl ReplicaManager {
         }
     }
 
-    pub fn promote_to_leader(
-        &self,
-        topic: &str,
-        partition: u32,
-        epoch: u64,
-        replicas: &[u32],
-    ) {
+    pub fn promote_to_leader(&self, topic: &str, partition: u32, epoch: u64, replicas: &[u32]) {
         self.promote_to_leader_with_leo(topic, partition, epoch, replicas, 0)
     }
 

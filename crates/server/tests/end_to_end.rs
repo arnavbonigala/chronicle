@@ -66,8 +66,7 @@ impl Drop for ServerProcess {
 }
 
 fn server_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_chronicle-server")
-        .expect("CARGO_BIN_EXE_chronicle-server not set")
+    std::env::var("CARGO_BIN_EXE_chronicle-server").expect("CARGO_BIN_EXE_chronicle-server not set")
 }
 
 fn alloc_addr() -> String {
@@ -142,7 +141,11 @@ async fn single_broker_produce_and_consume_roundtrip() {
         .await
         .expect("create_topic rpc")
         .into_inner();
-    assert!(create_resp.error.is_none(), "create_topic error: {:?}", create_resp.error);
+    assert!(
+        create_resp.error.is_none(),
+        "create_topic error: {:?}",
+        create_resp.error
+    );
 
     let values: Vec<&str> = vec!["one", "two", "three"];
     for (i, v) in values.iter().enumerate() {
@@ -178,7 +181,11 @@ async fn single_broker_produce_and_consume_roundtrip() {
         .await
         .expect("fetch rpc")
         .into_inner();
-    assert!(fetch_resp.error.is_none(), "fetch error: {:?}", fetch_resp.error);
+    assert!(
+        fetch_resp.error.is_none(),
+        "fetch error: {:?}",
+        fetch_resp.error
+    );
     assert_eq!(fetch_resp.records.len(), values.len());
 
     for (i, rec) in fetch_resp.records.iter().enumerate() {
@@ -207,7 +214,11 @@ async fn single_broker_persists_across_restart() {
         .await
         .expect("create_topic rpc")
         .into_inner();
-    assert!(create_resp.error.is_none(), "create_topic error: {:?}", create_resp.error);
+    assert!(
+        create_resp.error.is_none(),
+        "create_topic error: {:?}",
+        create_resp.error
+    );
 
     let values: Vec<&str> = vec!["a", "b", "c"];
     for (i, v) in values.iter().enumerate() {
@@ -262,7 +273,11 @@ async fn single_broker_persists_across_restart() {
         .await
         .expect("fetch rpc after restart")
         .into_inner();
-    assert!(fetch_resp.error.is_none(), "fetch error after restart: {:?}", fetch_resp.error);
+    assert!(
+        fetch_resp.error.is_none(),
+        "fetch error after restart: {:?}",
+        fetch_resp.error
+    );
     assert_eq!(fetch_resp.records.len(), values.len());
 
     for (i, rec) in fetch_resp.records.iter().enumerate() {
@@ -336,7 +351,11 @@ async fn multi_broker_replication_and_failover() {
         .spawn()
         .expect("spawn broker 3");
 
-    for (a, label) in [(&addr1, "broker1"), (&addr2, "broker2"), (&addr3, "broker3")] {
+    for (a, label) in [
+        (&addr1, "broker1"),
+        (&addr2, "broker2"),
+        (&addr3, "broker3"),
+    ] {
         eprintln!("[e2e] waiting for {label} TCP on {a}…");
         wait_for_server(a, Duration::from_secs(20))
             .unwrap_or_else(|| panic!("{label} on {a} not ready"));
@@ -360,7 +379,11 @@ async fn multi_broker_replication_and_failover() {
         .await
         .expect("create_topic rpc")
         .into_inner();
-    assert!(create_resp.error.is_none(), "create_topic error: {:?}", create_resp.error);
+    assert!(
+        create_resp.error.is_none(),
+        "create_topic error: {:?}",
+        create_resp.error
+    );
     eprintln!("[e2e] topic created, sleeping 2s for replication setup…");
 
     sleep(Duration::from_secs(2)).await;
@@ -403,7 +426,7 @@ async fn multi_broker_replication_and_failover() {
         "[e2e] partition leader={leader} replicas={:?} isr={:?} hwm={} leo={}",
         part.replica_broker_ids, part.isr_broker_ids, part.high_watermark, part.log_end_offset
     );
-    assert!(leader >= 1 && leader <= 3, "unexpected leader {leader}");
+    assert!((1..=3).contains(&leader), "unexpected leader {leader}");
 
     let addrs = [&addr1, &addr2, &addr3];
     eprintln!("[e2e] killing leader broker {leader}…");
@@ -444,8 +467,10 @@ async fn multi_broker_replication_and_failover() {
                     if let Some(p) = t.partitions.first() {
                         eprintln!(
                             "[e2e] poll: leader={} isr={:?} hwm={} leo={}",
-                            p.leader_broker_id, p.isr_broker_ids,
-                            p.high_watermark, p.log_end_offset
+                            p.leader_broker_id,
+                            p.isr_broker_ids,
+                            p.high_watermark,
+                            p.log_end_offset
                         );
                         if p.leader_broker_id != leader && p.leader_broker_id != 0 {
                             new_leader = Some(p.leader_broker_id);
